@@ -306,7 +306,7 @@
 
   // ---------- 除外条件 ----------
   function renderExcl() {
-    [['exclPara', S.exclPara, '卸元'], ['exclRenta', S.exclRenta, '基幹システム']].forEach(([id, list, label]) => {
+    [['exclPara', S.exclPara, '卸元'], ['exclRenta', S.exclRenta, 'スマートれん太']].forEach(([id, list, label]) => {
       const box = $(id); clear(box);
       list.forEach((rule, i) => {
         const row = el('div', 'excl-row');
@@ -398,9 +398,9 @@
     v.pairs.filter(pr => pr.p.amount !== pr.r.amount).forEach(pr =>
       out.push(pr.r.shohinNm + '：' + yen(pr.r.amount) + '円 → ' + yen(pr.p.amount) + '円'));
     v.onlyPara.forEach(p =>
-      out.push(p.shohinNm + '：基幹システムに無し（卸元 ' + yen(p.amount) + '円）'));
+      out.push(p.shohinNm + '：れん太に無し（卸元 ' + yen(p.amount) + '円）'));
     v.onlyRenta.forEach(r =>
-      out.push(r.shohinNm + '：卸元に請求無し（基幹システム ' + yen(r.amount) + '円）'));
+      out.push(r.shohinNm + '：卸元に請求無し（スマートれん太 ' + yen(r.amount) + '円）'));
     return out;
   }
 
@@ -441,7 +441,7 @@
       k.appendChild(d);
     };
     kpi('卸元の請求', yen(res.buckets[B.MATCHED].para.amount + res.buckets[B.ONESIDE].para.amount) + '円');
-    kpi('基幹システム', yen(res.buckets[B.MATCHED].renta.amount + res.buckets[B.ONESIDE].renta.amount) + '円');
+    kpi('スマートれん太', yen(res.buckets[B.MATCHED].renta.amount + res.buckets[B.ONESIDE].renta.amount) + '円');
     kpi('差額', (res.scopedDiff > 0 ? '+' : '') + yen(res.scopedDiff) + '円', res.scopedDiff !== 0);
     kpi('対象人数', res.persons.length.toLocaleString() + '人');
     kpi('処理時間', res.ms + 'ms');
@@ -506,7 +506,7 @@
   function confirmPerson(v) {
     const paraDisp = v.paraNames.join('/'), rentaDisp = v.rentaNames.join('/');
     if (!confirm('次の2つを同一人物として登録します。\n\n卸元　　：' + paraDisp +
-      '\n基幹システム：' + rentaDisp + '\n\n次回以降は注記が出なくなります。よろしいですか。')) return;
+      '\nスマートれん太：' + rentaDisp + '\n\n次回以降は注記が出なくなります。よろしいですか。')) return;
     v.paraKeys.forEach(pk => {
       S.confirmed = S.confirmed.filter(c => c.paraKey !== pk);
       S.confirmed.push({ paraKey: pk, rentaKey: v.rentaKey, paraDisp, rentaDisp, at: new Date().toISOString() });
@@ -527,7 +527,7 @@
     { key: 'kname', label: 'お客様名', get: v => v.renta.length ? v.renta[0].kokyakuNm : '' },
     { key: 'name', label: '利用者名', get: v => v.label },
     { key: 'names', label: '両側の表記', get: v => ((v.flags || []).some(f => f.indexOf('根拠:') === 0) || (v.flags || []).includes('合算')) ? ('卸元 ' + v.paraNames.join('/') + ' ／ 基幹 ' + v.rentaNames.join('/')) : '' },
-    { key: 'tr', label: '基幹システム', num: true, get: v => v.tr },
+    { key: 'tr', label: 'スマートれん太', num: true, get: v => v.tr },
     { key: 'tp', label: '卸元の請求', num: true, get: v => v.tp },
     { key: 'diff', label: '差額', num: true, get: v => v.diff },
     { key: 'cnt', label: '件数', num: true, get: v => v.pairs.filter(p => p.p.amount !== p.r.amount).length + v.onlyPara.length + v.onlyRenta.length },
@@ -552,9 +552,9 @@
       String(now.getMinutes()).padStart(2, '0');
 
     aoa.push([safe('レンタル卸 金額不一致一覧　' + S.period)]);
-    aoa.push([safe('卸元 ' + S.paraName + '　／　基幹システム ' + S.rentaName + '　／　作成 ' + stamp)]);
+    aoa.push([safe('卸元 ' + S.paraName + '　／　スマートれん太 ' + S.rentaName + '　／　作成 ' + stamp)]);
     aoa.push([safe('卸元の請求 ' + yen(res.buckets[B.MATCHED].para.amount + res.buckets[B.ONESIDE].para.amount) +
-      '円　基幹システム ' + yen(res.buckets[B.MATCHED].renta.amount + res.buckets[B.ONESIDE].renta.amount) +
+      '円　スマートれん太 ' + yen(res.buckets[B.MATCHED].renta.amount + res.buckets[B.ONESIDE].renta.amount) +
       '円　差額 ' + (res.scopedDiff > 0 ? '+' : '') + yen(res.scopedDiff) + '円')]);
     const exc = [];
     Object.values(B).forEach(b => {
@@ -638,6 +638,25 @@
     } catch (e) { alert('設定ファイルを読み込めませんでした。'); }
     $('fileCfg').value = '';
   });
+
+  // 出し方の説明にスクリーンショットを差し込む。
+  // shots/ に画像が無ければ、その枠だけ「準備中」にして手順の文章は残す。
+  // 画像取得は img 要素で行う（CSP の connect-src 'none' は fetch を止めるが img-src 'self' は通る）
+  (function loadShots() {
+    document.querySelectorAll('#howto figure[data-shot]').forEach(fig => {
+      const name = fig.getAttribute('data-shot');
+      const cap = fig.querySelector('figcaption');
+      // loading="lazy" を付けると DOM の外にある間は読み込みが始まらないので付けない
+      const img = new Image();
+      img.alt = cap ? cap.textContent : '';
+      img.addEventListener('load', () => fig.insertBefore(img, cap));
+      img.addEventListener('error', () => {
+        fig.classList.add('missing');
+        if (cap) cap.textContent = '（' + cap.textContent + 'の画像は準備中）';
+      });
+      img.src = 'shots/' + name + '.png';
+    });
+  })();
 
   loadCfg();
   renderExcl();

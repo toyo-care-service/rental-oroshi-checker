@@ -20,3 +20,13 @@ tmp/
 
 # 実データを使う検証スクリプト（拠点名・仕入先コード・利用者名を含むため公開しない）
 verify.local.js
+
+# 手順のスクリーンショットは既定で追跡しない。
+# 画像には利用者名・金額が写り込むことがあり、テキストのスキャンでは検出できないため、
+# 中身を目で確認してから `git add -f shots/xxx.png` で明示的に追加する。
+# （shots/README.md の注意を読むこと）
+shots/*.png
+shots/*.jpg
+shots/*.jpeg
+shots/*.gif
+shots/*.webp

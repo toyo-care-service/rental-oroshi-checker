@@ -82,6 +82,25 @@ input[type=text]:focus,input[type=number]:focus,select:focus{outline:2px solid v
 .pill{font-size:11px;background:var(--brand-soft);color:var(--brand-dark);padding:2px 8px;border-radius:99px}
 .foot{color:var(--ink-3);font-size:11.5px;margin-top:26px;text-align:center}
 .detail{font-size:12px;color:var(--ink-2);white-space:pre-wrap}
+.howto{margin-top:14px;border:1px solid var(--line);border-radius:8px;background:#FAFBFD}
+.howto > summary{cursor:pointer;padding:10px 14px;font-size:12.5px;font-weight:600;color:var(--brand-dark);list-style:none}
+.howto > summary::-webkit-details-marker{display:none}
+.howto > summary::before{content:"▸";display:inline-block;width:14px;transition:transform .15s}
+.howto[open] > summary::before{transform:rotate(90deg)}
+.howto ol.steps{margin:0;padding:0 18px 16px 34px}
+.howto ol.steps > li{margin-bottom:16px}
+.howto ol.steps > li::marker{color:var(--brand);font-weight:700}
+.howto .st{font-size:13px;margin-bottom:6px}
+.howto table.cond{width:auto;margin:6px 0;font-size:12.5px;border:1px solid var(--line);border-radius:6px;overflow:hidden}
+.howto table.cond th{background:#F3F5F9;padding:5px 12px;white-space:nowrap;text-align:left;position:static}
+.howto table.cond td{padding:5px 14px}
+.howto .note-inline{font-size:12px;color:var(--warn-ink);background:var(--warn-bg);
+  border:1px solid var(--warn-line);border-radius:6px;padding:8px 11px;margin:8px 0}
+.howto figure{margin:8px 0 0}
+.howto figure img{max-width:100%;border:1px solid var(--line);border-radius:6px;display:block}
+.howto figcaption{font-size:11.5px;color:var(--ink-3);margin-top:4px}
+.howto figure.missing{border:1px dashed var(--line);border-radius:6px;padding:10px 12px;background:#fff}
+.howto figure.missing figcaption{margin:0;color:var(--ink-3)}
 </style>
 </head>
 <body>
@@ -93,7 +112,7 @@ input[type=text]:focus,input[type=number]:focus,select:focus{outline:2px solid v
     </svg>
     <h1>レンタル卸 金額不一致チェッカー</h1>
   </header>
-  <p class="lead">卸元の請求データと、基幹システムの支払予定表を突き合わせて、金額が合わない利用者を洗い出します。
+  <p class="lead">卸元の請求データと、スマートれん太の支払予定表を突き合わせて、金額が合わない利用者を洗い出します。
     ファイルはこの画面の中だけで処理され、外部には送信されません。</p>
 
   <!-- ステップ1 -->
@@ -102,7 +121,7 @@ input[type=text]:focus,input[type=number]:focus,select:focus{outline:2px solid v
     <p class="hint">2つとも同じ月のものを選んでください。ドラッグ＆ドロップでも、クリックして選んでも構いません。</p>
     <div class="grid2">
       <div class="drop" id="dropRenta" tabindex="0" role="button" aria-label="支払予定表を選ぶ">
-        <div class="t">基幹システム：レンタル卸支払予定表</div>
+        <div class="t">スマートれん太：レンタル卸支払予定表</div>
         <div class="s">「Excelへ」で保存した .xls ファイル</div>
         <div class="fn" id="fnRenta"></div>
         <input type="file" id="fileRenta" accept=".xls,.txt,.tsv">
@@ -115,6 +134,31 @@ input[type=text]:focus,input[type=number]:focus,select:focus{outline:2px solid v
       </div>
     </div>
     <div id="loadMsg"></div>
+
+    <details class="howto" id="howto">
+      <summary>スマートれん太での出し方</summary>
+      <ol class="steps">
+        <li>
+          <div class="st">事務メニュー ＞ 売掛・買掛他 ＞ <b>レンタル卸料金支払予定表</b> を開く</div>
+          <p class="mini" style="margin:2px 0 0">開いた画面の見出しは「レンタル卸支払予定表」です（メニューの表記と少し違います）。</p>
+          <figure data-shot="menu"><figcaption>メニューの場所</figcaption></figure>
+        </li>
+        <li>
+          <div class="st">条件を次のように入れる</div>
+          <table class="cond">
+            <tr><th>部門</th><td><b>空欄のまま</b></td></tr>
+            <tr><th>年月</th><td>調べたい年月を入力</td></tr>
+            <tr><th>レンタル卸</th><td><b>空欄のまま</b></td></tr>
+          </table>
+          <p class="note-inline">部門とレンタル卸を空欄にすると全件が出ます。1つに絞ると<b>他の拠点を丸ごと見落とします</b>。範囲はこのアプリの「3 突合する範囲を決める」で指定してください。</p>
+          <figure data-shot="cond"><figcaption>条件の入力画面</figcaption></figure>
+        </li>
+        <li>
+          <div class="st"><b>Excelへ</b> を押して保存する</div>
+          <figure data-shot="excel"><figcaption>保存ボタンの場所</figcaption></figure>
+        </li>
+      </ol>
+    </details>
   </section>
 
   <!-- ステップ2 -->
@@ -122,7 +166,7 @@ input[type=text]:focus,input[type=number]:focus,select:focus{outline:2px solid v
     <h2><span class="step-no">2</span>対象年月を確認する</h2>
     <p class="hint">卸元の請求データには年月の列がありません。機械では確認できないので、目で見て確かめてください。</p>
     <div class="msg note">
-      基幹システムの支払予定表は <span class="period" id="periodText"></span> でした。
+      スマートれん太の支払予定表は <span class="period" id="periodText"></span> でした。
     </div>
     <label class="check">
       <input type="checkbox" id="chkPeriod">
@@ -155,13 +199,13 @@ input[type=text]:focus,input[type=number]:focus,select:focus{outline:2px solid v
     <div style="margin-bottom:14px">
       <div class="row" style="margin-bottom:6px">
         <b style="font-size:13px">突合から外す商品</b>
-        <span class="mini">卸元側と基幹システム側は商品コードの体系が違うため、それぞれに条件を書きます</span>
+        <span class="mini">卸元側とれん太側は商品コードの体系が違うため、それぞれに条件を書きます</span>
       </div>
       <div id="exclPara"></div>
       <div id="exclRenta"></div>
       <div class="row">
         <button class="ghost" id="btnAddExclPara">卸元側の条件を追加</button>
-        <button class="ghost" id="btnAddExclRenta">基幹システム側の条件を追加</button>
+        <button class="ghost" id="btnAddExclRenta">れん太側の条件を追加</button>
         <button class="ghost" id="btnExclCheap">1円・0円の付属品を外すひな形</button>
       </div>
     </div>

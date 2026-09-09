@@ -164,7 +164,7 @@ function unquote(s) {
   return t.replace(/^"(.*)"$/s, '$1').trim();
 }
 
-// ==================== 基幹システム側の読み込み（設計書 5.1） ====================
+// ==================== スマートれん太側の読み込み（設計書 5.1） ====================
 
 const RENTA_REQUIRED = ['年度', '部門名', '仕入先コード', 'お客様番号', 'お客様名',
   '利用者名', '商品', '商品名', '決定借受料(税抜)'];
@@ -178,7 +178,7 @@ function loadRenta(text) {
   const missing = RENTA_REQUIRED.filter(k => !(k in idx));
   if (missing.length) {
     throw new Error('支払予定表の列が見つかりません: ' + missing.join('、') +
-      '\n基幹システムの「レンタル卸支払予定表」を Excel 出力したファイルを選んでください。');
+      '\nスマートれん太の「レンタル卸支払予定表」を Excel 出力したファイルを選んでください。');
   }
   const g = (r, k) => (k in idx ? unquote(r[idx[k]]) : '');
   const out = [];

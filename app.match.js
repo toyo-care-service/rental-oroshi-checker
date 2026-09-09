@@ -335,7 +335,7 @@ function reconcile(paraRows, rentaRows, opts) {
     v.tr = v.renta.reduce((s, x) => s + (x.amount || 0), 0);
     v.diff = v.tr - v.tp;
     v.judge = v.diff === 0 ? '一致'
-      : (!v.renta.length ? '基幹システムに無い' : (!v.para.length ? '卸元に無い' : '金額不一致'));
+      : (!v.renta.length ? 'スマートれん太に無い' : (!v.para.length ? '卸元に無い' : '金額不一致'));
     // 弱い根拠で結んだうえに金額も違うものは強く出す（設計書 7.2）
     if (v.diff !== 0 && TIER_FLAG[v.tier]) v.flags.push('要確認(強)');
   });
