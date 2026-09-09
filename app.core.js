@@ -114,6 +114,10 @@ function parseDelimited(text, delim) {
           }
         }
       } else {
+        // 引用符の中でも単独の CR は認めない（外側と揃える）
+        if (c === '\r' && text[i + 1] !== '\n') {
+          throw mkErr('BAD_LINEBREAK', '引用符の中の改行の形式が正しくありません（' + line + '行目付近）。', line);
+        }
         if (c === '\n') line++;
         field += c;
       }

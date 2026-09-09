@@ -185,6 +185,11 @@ console.log('== 壊れた入力はファイル全体を読込不可にする =='
   ok(e5 === 'BAD_LINEBREAK', '項目の途中の単独の復帰文字も構文エラーにする（黙って捨てない）');
   ok(C.parseDelimited('a,b\r\nc,d\r\n', ',').length === 2, '通常の CRLF は正しく読める');
   ok(C.parseDelimited('a,b\nc,d\n', ',').length === 2, '通常の LF は正しく読める');
+  let e6 = null;
+  try { C.parseDelimited('a,b\n"あ\rい",c\n', ','); } catch (e) { e6 = e.code; }
+  ok(e6 === 'BAD_LINEBREAK', '引用符の中の単独の復帰文字も構文エラーにする');
+  ok(C.parseDelimited('a,b\n"あ\r\nい",c\n', ',')[1][0] === 'あ\r\nい',
+    '引用符の中の CRLF はデータとして残す');
 }
 
 console.log('\n' + (fail ? '!! ' + fail + ' 件失敗' : '全項目 OK'));
