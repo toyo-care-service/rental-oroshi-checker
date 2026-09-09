@@ -104,9 +104,12 @@ function parseDelimited(text, delim) {
         if (text[i + 1] === '"') { field += '"'; i++; }
         else {
           inQuotes = false;
-          // 閉じ引用符の直後は 区切り・改行・終端 のいずれかでなければならない
+          // 閉じ引用符の直後は 区切り・改行・終端 のいずれかでなければならない。
+          // 単独の \r（\n を伴わない）も認めない。認めると "a"\rX が aX として読まれてしまう
           const nx = text[i + 1];
-          if (nx !== undefined && nx !== delim && nx !== '\n' && nx !== '\r') {
+          const okNext = nx === undefined || nx === delim || nx === '\n'
+            || (nx === '\r' && text[i + 2] === '\n');
+          if (!okNext) {
             throw mkErr('BAD_QUOTE', '引用符の閉じ方が正しくありません（' + line + '行目付近）。', line);
           }
         }
@@ -122,7 +125,10 @@ function parseDelimited(text, delim) {
     } else if (c === delim) {
       row.push(field); field = '';
     } else if (c === '\r') {
-      // 次の \n で処理する
+      // CRLF の CR だけを読み飛ばす。単独の \r は黙って捨てず構文エラーにする
+      if (text[i + 1] !== '\n') {
+        throw mkErr('BAD_LINEBREAK', '改行の形式が正しくありません（' + line + '行目付近）。', line);
+      }
     } else if (c === '\n') {
       row.push(field); rows.push(row);
       row = []; field = ''; line++;

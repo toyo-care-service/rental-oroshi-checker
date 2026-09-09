@@ -177,6 +177,14 @@ console.log('== 壊れた入力はファイル全体を読込不可にする =='
   let e3 = null;
   try { C.parseDelimited('a\tb\n"あ"い\tc\n', '\t'); } catch (e) { e3 = e.code; }
   ok(e3 === 'BAD_QUOTE', '閉じ引用符の直後に文字があれば構文エラーにする');
+  let e4 = null;
+  try { C.parseDelimited('a,b\n"あ"\rい,c\n', ','); } catch (e) { e4 = e.code; }
+  ok(e4 === 'BAD_QUOTE', '閉じ引用符の直後の単独の復帰文字も構文エラーにする');
+  let e5 = null;
+  try { C.parseDelimited('a,b\nあ\rい,c\n', ','); } catch (e) { e5 = e.code; }
+  ok(e5 === 'BAD_LINEBREAK', '項目の途中の単独の復帰文字も構文エラーにする（黙って捨てない）');
+  ok(C.parseDelimited('a,b\r\nc,d\r\n', ',').length === 2, '通常の CRLF は正しく読める');
+  ok(C.parseDelimited('a,b\nc,d\n', ',').length === 2, '通常の LF は正しく読める');
 }
 
 console.log('\n' + (fail ? '!! ' + fail + ' 件失敗' : '全項目 OK'));
