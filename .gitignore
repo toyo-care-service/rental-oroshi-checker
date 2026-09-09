@@ -1,0 +1,22 @@
+# 業務データは絶対にコミットしない
+*.xls
+*.xlsx
+*.csv
+*.pdf
+data/
+sample/
+検証/
+
+# OS / エディタ
+Thumbs.db
+desktop.ini
+.DS_Store
+.vscode/
+.idea/
+
+# 作業用
+*.log
+tmp/
+
+# 実データを使う検証スクリプト（拠点名・仕入先コード・利用者名を含むため公開しない）
+verify.local.js
