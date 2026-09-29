@@ -32,6 +32,7 @@ app.ui.js         画面まわりと Excel 出力
 vendor/           同梱ライブラリ（出所とハッシュは vendor/README.md）
 shots/            手順のスクリーンショット（置き方と注意は shots/README.md）
 test.js           合成データによる自動テスト（node test.js）
+test.ui.js        画面のコードを偽DOMの上でそのまま動かすテスト（node test.ui.js）
 DESIGN.md         設計書
 ```
 
@@ -58,6 +59,7 @@ DESIGN.md         設計書
 
 ```bash
 node test.js                                  # 合成データのテスト
+node test.ui.js                               # 画面の状態のテスト（読み込み・設定・結果の扱い）
 python -m http.server 8931 --bind 127.0.0.1   # ローカルで開く
 ```
 

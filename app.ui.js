@@ -40,22 +40,26 @@
       showOneSide: $('chkOneSide').checked
     };
   }
+  // 設定はアプリ自身が書き出す形だけを受け付ける（手で書き換えた・壊れた設定で画面と集計がずれないように）
+  const isObj = v => v != null && typeof v === 'object' && !Array.isArray(v);
+  const isStr = v => typeof v === 'string' && v !== '';
   function validCfg(o) {
-    if (!o || typeof o !== 'object') return '設定の形式が正しくありません';
+    if (!isObj(o)) return '設定の形式が正しくありません';
     if (o.version !== CFG_VERSION) return '設定のバージョンが違います（' + o.version + '）';
     if (!Array.isArray(o.mappings)) return '対応表がありません';
-    for (const m of o.mappings) {
-      if (typeof m.bumon !== 'string' || typeof m.shiireCd !== 'string') return '対応表の中身が正しくありません';
-      if (!m.ignore && !Array.isArray(m.kyoten)) return '対応表の拠点が正しくありません';
-    }
     for (const k of ['confirmed', 'exclPara', 'exclRenta', 'ignoreKyoten']) {
       if (o[k] != null && !Array.isArray(o[k])) return k + ' の形式が正しくありません';
     }
-    if ((o.ignoreKyoten || []).some(k => typeof k !== 'string' || !k)) return '対象外の拠点が正しくありません';
+    for (const m of o.mappings) {
+      if (!isObj(m) || typeof m.bumon !== 'string' || typeof m.shiireCd !== 'string') return '対応表の中身が正しくありません';
+      if (typeof m.ignore !== 'boolean' || !Array.isArray(m.kyoten) || !m.kyoten.every(isStr)) return '対応表の拠点が正しくありません';
+      if (m.ignore && m.kyoten.length) return '対象外の組に拠点が入っています';
+      if (!m.ignore && !m.kyoten.length) return '突合する拠点が指定されていない組があります';
+    }
+    if (!(o.ignoreKyoten || []).every(isStr)) return '対象外の拠点が正しくありません';
     for (const c of (o.confirmed || [])) {
-      if (typeof c.paraKey !== 'string' || typeof c.rentaKey !== 'string' || !c.paraKey || !c.rentaKey) {
-        return '確認済み対応表の中身が正しくありません';
-      }
+      if (!isObj(c) || !isStr(c.paraKey) || !isStr(c.rentaKey)) return '確認済み対応表の中身が正しくありません';
+      if (['paraDisp', 'rentaDisp', 'at'].some(k => c[k] != null && typeof c[k] !== 'string')) return '確認済み対応表の中身が正しくありません';
     }
     const seen = new Set();
     for (const c of (o.confirmed || [])) {
@@ -64,7 +68,7 @@
     }
     for (const k of ['exclPara', 'exclRenta']) {
       for (const r of (o[k] || [])) {
-        if (['model', 'shohinNm', 'shohinCd'].indexOf(r.field) < 0) return k + ' の条件の種類が不正です';
+        if (!isObj(r) || ['model', 'shohinNm', 'shohinCd'].indexOf(r.field) < 0) return k + ' の条件の種類が不正です';
         if (typeof r.value !== 'string') return k + ' の条件の値が不正です';
         if (r.amountIn != null && (!Array.isArray(r.amountIn) || r.amountIn.some(n => typeof n !== 'number' || !isFinite(n)))) {
           return k + ' の金額条件が不正です';
@@ -74,6 +78,7 @@
     if (o.threshold != null && (typeof o.threshold !== 'number' || !isFinite(o.threshold) || o.threshold < 0)) {
       return 'しきい値が不正です';
     }
+    if (o.showOneSide != null && typeof o.showOneSide !== 'boolean') return '表示の切替が正しくありません';
     const mkeys = new Set();
     for (const m of o.mappings) {
       const k = m.bumon + '\t' + m.shiireCd;
@@ -127,6 +132,13 @@
     });
   }
 
+  /** 設定を変えたら前の結果は使わせない。出力の見出し（今の設定）と中身（前の結果）が食い違うため、突合し直してもらう */
+  function invalidateResult() {
+    if (!S.result) return;
+    S.result = null;
+    show('cardResult', false);
+  }
+
   /** ファイルが変わったら、前のファイルに紐づく候補・確認・結果を捨てる（設計書 6） */
   function resetScope() {
     S.suggest = null;
@@ -153,54 +165,75 @@
     $(fnId).textContent = name + (sub ? '　' + sub : '');
   }
 
+  // 同じ種類のファイルを続けて選んだとき、後から読み終わった古い方で上書きしないよう、最新の読込だけを採用する
+  const loadSeq = { renta: 0, para: 0 };
+
+  /** 読めなかったファイルは、前に読んだファイルごと未読込に戻す（表示と状態をそろえる） */
+  function failRenta(message) {
+    S.renta = null; S.rentaName = ''; S.period = '';
+    msg($('loadMsgRenta'), 'warn', message);
+    $('dropRenta').classList.remove('done'); $('fnRenta').textContent = '';
+  }
+  function failPara(message) {
+    S.para = null; S.paraName = '';
+    msg($('loadMsgPara'), 'warn', message);
+    $('dropPara').classList.remove('done'); $('fnPara').textContent = '';
+  }
+
   async function onRenta(file) {
-    clear($('loadMsg'));
-    try {
-      const text = await readAsText(file);
-      const r = C.loadRenta(text);
+    const seq = ++loadSeq.renta;
+    let r = null, err = null;
+    try { r = C.loadRenta(await readAsText(file)); } catch (e) { err = e; }
+    if (seq !== loadSeq.renta) return;
+    clear($('loadMsgRenta'));
+    if (err) {
+      failRenta('支払予定表を読み込めませんでした。' + err.message);
+    } else {
       const periods = [...new Set(r.rows.map(x => x.period).filter(Boolean))];
       if (periods.length !== 1) {
-        msg($('loadMsg'), 'warn', '支払予定表に年月が' + periods.length + '種類入っています（' +
+        failRenta('支払予定表に年月が' + periods.length + '種類入っています（' +
           periods.join('、') + '）。1か月分だけを出力し直してください。');
-        S.renta = null; refresh(); return;
+      } else {
+        S.renta = r; S.rentaName = file.name; S.period = periods[0];
+        resetScope();
+        markDone('dropRenta', 'fnRenta', file.name, r.rows.length.toLocaleString() + '行・' + S.period);
       }
-      S.renta = r; S.rentaName = file.name; S.period = periods[0];
-      resetScope();
-      markDone('dropRenta', 'fnRenta', file.name, r.rows.length.toLocaleString() + '行・' + S.period);
-    } catch (e) {
-      S.renta = null;
-      msg($('loadMsg'), 'warn', '支払予定表を読み込めませんでした。' + e.message);
-      $('dropRenta').classList.remove('done'); $('fnRenta').textContent = '';
     }
     refresh();
   }
 
   async function onPara(file) {
-    clear($('loadMsg'));
+    const seq = ++loadSeq.para;
+    const isXlsx = /\.xlsx?$/i.test(file.name) && !/\.csv$/i.test(file.name);
+    let p = null, err = null;
     try {
-      let p;
-      if (/\.xlsx?$/i.test(file.name) && !/\.csv$/i.test(file.name)) {
+      if (isXlsx) {
         const buf = await file.arrayBuffer();
+        if (seq !== loadSeq.para) return;
         const wb = XLSX.read(buf, { type: 'array' });
         const sheets = wb.SheetNames.map(n => ({
           name: n, rows: XLSX.utils.sheet_to_json(wb.Sheets[n], { header: 1, raw: true, defval: '' })
         }));
         p = C.loadParaXlsxRows(sheets);
-        msg($('loadMsg'), 'note', 'xlsx 形式には拠点・利用者コード・マークの列がありません。' +
-          '突合する範囲の確認と名寄せの精度が落ちます。可能であれば CSV をもらってください。');
       } else {
         p = C.loadParaCsv(await readAsText(file));
       }
+    } catch (e) { err = e; }
+    if (seq !== loadSeq.para) return;
+    clear($('loadMsgPara'));
+    if (err) {
+      failPara('請求データを読み込めませんでした。' + err.message);
+    } else {
       S.para = p; S.paraName = file.name;
       resetScope();
       const total = p.rows.reduce((s, x) => s + (x.amount || 0), 0);
       markDone('dropPara', 'fnPara', file.name, p.rows.length.toLocaleString() + '行・合計 ' + yen(total) + '円');
+      if (isXlsx) {
+        msg($('loadMsgPara'), 'note', 'xlsx 形式には拠点・利用者コード・マークの列がありません。' +
+          '突合する範囲の確認と名寄せの精度が落ちます。可能であれば CSV をもらってください。');
+      }
       const bad = p.rows.filter(x => x.amount == null).length;
-      if (bad) msg($('loadMsg'), 'warn', '金額を読み取れない行が ' + bad + ' 行あります。検算ができないため、結果は確定扱いになりません。');
-    } catch (e) {
-      S.para = null;
-      msg($('loadMsg'), 'warn', '請求データを読み込めませんでした。' + e.message);
-      $('dropPara').classList.remove('done'); $('fnPara').textContent = '';
+      if (bad) msg($('loadMsgPara'), 'warn', '金額を読み取れない行が ' + bad + ' 行あります。検算ができないため、結果は確定扱いになりません。');
     }
     refresh();
   }
@@ -297,7 +330,7 @@
       if (on) S.ignoreKyoten = S.ignoreKyoten.filter(k => k !== kyotenName);
     }
     S.mappings = S.mappings.filter(x => x.ignore || (x.kyoten && x.kyoten.length));
-    saveCfg(); renderMap(); refresh();
+    invalidateResult(); saveCfg(); renderMap(); refresh();
   }
 
   function setKyotenIgnore(k, on) {
@@ -312,7 +345,7 @@
     } else {
       S.ignoreKyoten = S.ignoreKyoten.filter(x => x !== k);
     }
-    saveCfg(); renderMap(); refresh();
+    invalidateResult(); saveCfg(); renderMap(); refresh();
   }
 
   function renderMapMsg() {
@@ -372,22 +405,22 @@
           : [['shohinNm', '商品名に含む'], ['shohinCd', '商品コードが一致']];
         opts.forEach(([v, t]) => { const o = el('option', null, t); o.value = v; sel.appendChild(o); });
         sel.value = rule.field;
-        sel.addEventListener('change', () => { rule.field = sel.value; saveCfg(); });
+        sel.addEventListener('change', () => { rule.field = sel.value; invalidateResult(); saveCfg(); });
         row.appendChild(sel);
         const txt = document.createElement('input');
         txt.type = 'text'; txt.value = rule.value; txt.placeholder = '例: 品番の一部'; txt.style.width = '160px';
-        txt.addEventListener('input', () => { rule.value = txt.value; saveCfg(); });
+        txt.addEventListener('input', () => { rule.value = txt.value; invalidateResult(); saveCfg(); });
         row.appendChild(txt);
         const amt = document.createElement('input');
         amt.type = 'text'; amt.value = (rule.amountIn || []).join(','); amt.placeholder = '金額（空欄なら全部）';
         amt.style.width = '150px';
         amt.addEventListener('input', () => {
           rule.amountIn = amt.value.split(',').map(s => Number(s.trim())).filter(n => !isNaN(n) && amt.value.trim() !== '');
-          saveCfg();
+          invalidateResult(); saveCfg();
         });
         row.appendChild(amt);
         const del = el('button', 'ghost', '削除');
-        del.addEventListener('click', () => { list.splice(i, 1); renderExcl(); saveCfg(); });
+        del.addEventListener('click', () => { list.splice(i, 1); invalidateResult(); renderExcl(); saveCfg(); });
         row.appendChild(del);
         box.appendChild(row);
       });
@@ -707,9 +740,9 @@
         ? { bumon: g.bumon, shiireCd: g.shiireCd, kyoten: ky, ignore: false }
         : { bumon: g.bumon, shiireCd: g.shiireCd, kyoten: [], ignore: true };
     });
-    saveCfg(); renderMap(); refresh();
+    invalidateResult(); saveCfg(); renderMap(); refresh();
   });
-  $('btnMapClear').addEventListener('click', () => { S.mappings = []; S.ignoreKyoten = []; saveCfg(); renderMap(); refresh(); });
+  $('btnMapClear').addEventListener('click', () => { S.mappings = []; S.ignoreKyoten = []; invalidateResult(); saveCfg(); renderMap(); refresh(); });
 
   $('btnAddExclPara').addEventListener('click', () => { S.exclPara.push({ field: 'model', value: '', amountIn: [] }); renderExcl(); });
   $('btnAddExclRenta').addEventListener('click', () => { S.exclRenta.push({ field: 'shohinNm', value: '', amountIn: [] }); renderExcl(); });
@@ -717,7 +750,7 @@
     // 型式は運用ごとに違うので空欄で用意する。金額の条件だけ入れておく
     S.exclPara.push({ field: 'model', value: '', amountIn: [0, 1] });
     S.exclRenta.push({ field: 'shohinNm', value: '', amountIn: [0, 1] });
-    renderExcl(); saveCfg();
+    invalidateResult(); renderExcl(); saveCfg();
   });
 
   $('btnCfgExport').addEventListener('click', () => {
@@ -735,10 +768,20 @@
     try {
       const o = JSON.parse(await f.text());
       const bad = validCfg(o);
-      if (bad) { alert('この設定ファイルは使えません：' + bad); return; }
-      applyCfg(o); saveCfg(); renderMap(); refresh();
-    } catch (e) { alert('設定ファイルを読み込めませんでした。'); }
-    $('fileCfg').value = '';
+      if (bad) {
+        alert('この設定ファイルは使えません：' + bad);
+      } else {
+        applyCfg(o);
+        // 読み込んだ設定を、いま開いているファイルに合わせて整え直す（ファイルに無い組・拠点を落とす）
+        S.suggest = null;
+        invalidateResult();
+        saveCfg(); renderMap(); refresh();
+      }
+    } catch (e) {
+      alert('設定ファイルを読み込めませんでした。');
+    } finally {
+      $('fileCfg').value = '';
+    }
   });
 
   // 出し方の説明にスクリーンショットを差し込む。
