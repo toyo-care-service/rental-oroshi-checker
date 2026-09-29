@@ -167,6 +167,13 @@
 
   // 同じ種類のファイルを続けて選んだとき、後から読み終わった古い方で上書きしないよう、最新の読込だけを採用する
   const loadSeq = { renta: 0, para: 0 };
+  // 読み込み中は突合させない。選んだ瞬間に前の結果も隠す（読み終わる前に前の結果を出力させない）
+  const loading = { renta: false, para: false };
+  function startLoading(kind) {
+    loading[kind] = true;
+    invalidateResult();
+    refresh();
+  }
 
   /** 読めなかったファイルは、前に読んだファイルごと未読込に戻す（表示と状態をそろえる） */
   function failRenta(message) {
@@ -182,12 +189,16 @@
 
   async function onRenta(file) {
     const seq = ++loadSeq.renta;
+    startLoading('renta');
     let r = null, err = null;
     try { r = C.loadRenta(await readAsText(file)); } catch (e) { err = e; }
     if (seq !== loadSeq.renta) return;
+    loading.renta = false;
     clear($('loadMsgRenta'));
     if (err) {
       failRenta('支払予定表を読み込めませんでした。' + err.message);
+    } else if (!r.rows.length) {
+      failRenta('支払予定表にデータが1行もありません。年月の入れ間違いがないか確かめて、出力し直してください。');
     } else {
       const periods = [...new Set(r.rows.map(x => x.period).filter(Boolean))];
       if (periods.length !== 1) {
@@ -204,6 +215,7 @@
 
   async function onPara(file) {
     const seq = ++loadSeq.para;
+    startLoading('para');
     const isXlsx = /\.xlsx?$/i.test(file.name) && !/\.csv$/i.test(file.name);
     let p = null, err = null;
     try {
@@ -220,9 +232,12 @@
       }
     } catch (e) { err = e; }
     if (seq !== loadSeq.para) return;
+    loading.para = false;
     clear($('loadMsgPara'));
     if (err) {
       failPara('請求データを読み込めませんでした。' + err.message);
+    } else if (!p.rows.length) {
+      failPara('請求データにデータが1行もありません。届いたファイルの中身を確かめてください。');
     } else {
       S.para = p; S.paraName = file.name;
       resetScope();
@@ -441,6 +456,7 @@
     if (!$('mapTable').querySelector('tbody').childNodes.length) renderMap();
 
     const reasons = [];
+    if (loading.renta || loading.para) reasons.push('ファイルの読み込み');
     if (!$('chkPeriod').checked) reasons.push('対象年月の確認');
     if (!S.mappings.filter(m => !m.ignore).length) reasons.push('突合する組の指定');
     if (S.dupKyoten && S.dupKyoten.length) reasons.push('拠点の重複の解消');
@@ -762,11 +778,15 @@
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   });
   $('btnCfgImport').addEventListener('click', () => $('fileCfg').click());
+  let cfgSeq = 0;
   $('fileCfg').addEventListener('change', async () => {
     const f = $('fileCfg').files[0];
     if (!f) return;
+    const seq = ++cfgSeq;
     try {
-      const o = JSON.parse(await f.text());
+      const text = await f.text();
+      if (seq !== cfgSeq) return;   // 後から別の設定ファイルが選ばれた
+      const o = JSON.parse(text);
       const bad = validCfg(o);
       if (bad) {
         alert('この設定ファイルは使えません：' + bad);
@@ -775,9 +795,10 @@
         // 読み込んだ設定を、いま開いているファイルに合わせて整え直す（ファイルに無い組・拠点を落とす）
         S.suggest = null;
         invalidateResult();
-        saveCfg(); renderMap(); refresh();
+        renderMap(); saveCfg(); refresh();
       }
     } catch (e) {
+      if (seq !== cfgSeq) return;   // 後から選ばれた設定ファイルがあるなら、古い方の失敗は知らせない
       alert('設定ファイルを読み込めませんでした。');
     } finally {
       $('fileCfg').value = '';

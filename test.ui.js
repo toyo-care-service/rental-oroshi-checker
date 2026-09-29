@@ -265,6 +265,86 @@ const goodCfg = () => ({
     ok(ui.$('taxMsg').textContent === '', '正しい請求データに差し替えると注意は消える');
   }
 
+  console.log('== 選び直した瞬間に前の結果を隠し、読み終わるまで突合させない ==');
+  {
+    const ui = boot(goodCfg());
+    await pick(ui, 'filePara', 'para.csv', PARA);
+    await pick(ui, 'fileRenta', 'renta.xls', RENTA);
+    await ui.$('chkPeriod').click();
+    await ui.$('btnRun').click();
+    ok(!hidden(ui, 'cardResult'), '（前提）突合すると結果が出る');
+    const done = pick(ui, 'filePara', 'para_next.csv', PARA, 60);
+    ok(hidden(ui, 'cardResult'), 'ファイルを選んだ瞬間に前の結果が隠れる（読み込み中に前の結果を出力できない）');
+    ok(ui.$('btnRun').disabled && /ファイルの読み込み/.test(ui.$('runHint').textContent), '読み込み中は突合できず、理由が出る');
+    await done;
+    ok(!/ファイルの読み込み/.test(ui.$('runHint').textContent), '読み終われば、読み込み中の理由は消える');
+    await ui.$('chkPeriod').click();
+    ok(!ui.$('btnRun').disabled, '読み終わって年月を確認すれば突合できる');
+  }
+
+  console.log('== データが1行も無いファイルは、理由を添えて読み込み失敗にする ==');
+  {
+    const ui = boot();
+    await pick(ui, 'filePara', 'para.csv', PARA);
+    await pick(ui, 'fileRenta', 'renta_empty.xls', R([]));
+    ok(/データが1行もありません/.test(ui.$('loadMsgRenta').textContent) && ui.$('fnRenta').textContent === '', '支払予定表が0行なら、その理由を出して未読込にする');
+    await pick(ui, 'fileRenta', 'renta.xls', RENTA);
+    await pick(ui, 'filePara', 'para_empty.csv', P([]));
+    ok(/データが1行もありません/.test(ui.$('loadMsgPara').textContent) && !ui.$('dropPara').classList.contains('done'), '請求データが0行なら、その理由を出して未読込にする');
+    ok(hidden(ui, 'cardPeriod'), '0行のファイルでは先に進めない');
+  }
+
+  console.log('== 設定ファイルを続けて選んだら、最後に選んだ方を使う ==');
+  {
+    const ui = boot();
+    await pick(ui, 'filePara', 'para.csv', PARA);
+    await pick(ui, 'fileRenta', 'renta.xls', RENTA);
+    const first = goodCfg(); first.threshold = 5;
+    const last = goodCfg(); last.threshold = 9;
+    ui.$('fileCfg').files = [{ text: () => wait(60).then(() => JSON.stringify(first)) }];
+    ui.$('fileCfg').fire('change');
+    ui.$('fileCfg').files = [{ text: async () => JSON.stringify(last) }];
+    ui.$('fileCfg').fire('change');
+    await wait(120);
+    ok(String(ui.$('threshold').value) === '9', '先に選んだ設定ファイルが後から読み終わっても、最後に選んだ方が残る');
+    ui.$('fileCfg').files = [{ text: () => wait(60).then(() => { throw new Error('読めない'); }) }];
+    ui.$('fileCfg').fire('change');
+    ui.$('fileCfg').files = [{ text: async () => JSON.stringify(last) }];
+    ui.$('fileCfg').fire('change');
+    await wait(120);
+    ok(ui.alerts.length === 0, '先に選んだ設定ファイルが読めなくても、後から選んだ方が使えれば警告は出さない');
+    const other = goodCfg(); other.threshold = 3;
+    ui.$('fileCfg').files = [{ text: () => wait(60).then(() => JSON.stringify(other)) }];
+    ui.$('fileCfg').fire('change');
+    ui.$('fileCfg').files = [{ text: async () => { throw new Error('読めない'); } }];
+    ui.$('fileCfg').fire('change');
+    await wait(120);
+    ok(ui.alerts.length === 1 && String(ui.$('threshold').value) === '9', '後から選んだ方が読めなければ警告を1回出し、先に選んだ方でも上書きしない');
+    ui.$('fileCfg').files = [{ text: () => wait(60).then(() => { throw new Error('読めない'); }) }];
+    ui.$('fileCfg').fire('change');
+    ui.$('fileCfg').files = [{ text: async () => { throw new Error('読めない'); } }];
+    ui.$('fileCfg').fire('change');
+    await wait(120);
+    ok(ui.alerts.length === 2, '両方読めなければ、警告は最後に選んだ方の1回だけ');
+  }
+
+  console.log('== 設定ファイルを読み込んだら、整え直してから保存する ==');
+  {
+    const ui = boot();
+    await pick(ui, 'filePara', 'para.csv', PARA);
+    await pick(ui, 'fileRenta', 'renta.xls', RENTA);
+    const c = goodCfg();
+    c.mappings.push({ bumon: 'Q部門', shiireCd: '999', kyoten: ['Z営業所'], ignore: false });
+    ui.$('fileCfg').files = [{ text: async () => JSON.stringify(c) }];
+    await ui.$('fileCfg').fire('change');
+    const saved = JSON.parse(ui.store.get('oroshi-checker/v1'));
+    ok(!saved.mappings.some(m => m.bumon === 'Q部門'), '今のファイルに無い組は、保存される設定にも残らない');
+    const again = boot(JSON.stringify(saved));
+    await pick(again, 'filePara', 'para.csv', PARA);
+    await pick(again, 'fileRenta', 'renta.xls', RENTA);
+    ok(!/今回のファイルに無い組/.test(again.$('mapMsg').textContent), '次に開いたとき、同じ注意が繰り返し出ない');
+  }
+
   console.log('\n' + (fail ? '!! ' + fail + ' 件失敗' : '全項目 OK'));
   process.exit(fail ? 1 : 0);
 })().catch(e => { console.error(e); process.exit(1); });
