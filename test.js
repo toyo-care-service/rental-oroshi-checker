@@ -192,5 +192,83 @@ console.log('== 壊れた入力はファイル全体を読込不可にする =='
     '引用符の中の CRLF はデータとして残す');
 }
 
+// ==================== 2回目の検証で出た修正依頼 ====================
+console.log('\n== 課税区分の読み取り ==');
+ok(C.taxClass('非') === '非' && C.taxClass('非課税') === '非', '「非」「非課税」は非課税');
+ok(C.taxClass('10%') === '課' && C.taxClass('８％') === '課' && C.taxClass('外税') === '課', '税率と「外税」は課税');
+ok(C.taxClass('') === null && C.taxClass('不明な値') === null, '空欄や読めない値は null（どちらにも寄せない）');
+ok(C.taxClass('0%') === '非', '0% は税額が出ないので非課税と同じに扱う');
+
+console.log('== 50音順のキー ==');
+ok(C.kanaSortKey('ｱｵｷ ｱｷﾗ') === 'アオキ アキラ', '半角カナをならし、姓と名の区切りは1つの空白にする');
+ok(C.kanaSortKey('あおき　あきら') === C.kanaSortKey('アオキ アキラ'), 'ひらがなとカタカナ、全角と半角の空白を同じに扱う');
+ok(C.kanaSortKey('ｶﾞﾓｳ') === 'ガモウ', '半角の濁点を1文字にまとめる');
+{
+  const JA = new Intl.Collator('ja');
+  const names = ['シケンネ　カカ', 'ｼｹﾝｸ ｲｲ', 'シケン　ノノ', 'テーア', 'テイア'];
+  const sorted = names.slice().sort((a, b) => JA.compare(C.kanaSortKey(a), C.kanaSortKey(b)));
+  ok(sorted.join(',') === 'シケン　ノノ,ｼｹﾝｸ ｲｲ,シケンネ　カカ,テイア,テーア',
+    '姓ごとの50音順（シケン → シケンク → シケンネ）。長音は直前の母音として並ぶ（テー ＝ テエ）');
+}
+
+console.log('== 課税区分の照合 ==');
+{
+  const rt = R([
+    Object.assign({}, base, { お客様番号: '4001', 利用者名: '課税 一郎', 利用者名ｶﾅ: 'ｶｾﾞｲ ｲﾁﾛｳ', 商品: 'T1', 商品名: '付属品 HHH-8000', '決定借受料(税抜)': '400', 決定卸先消費税区分: '外税' }),
+    Object.assign({}, base, { お客様番号: '4001', 利用者名: '課税 一郎', 利用者名ｶﾅ: 'ｶｾﾞｲ ｲﾁﾛｳ', 商品: 'T2', 商品名: 'ベッド JJJ-9000', '決定借受料(税抜)': '9,000', 決定卸先消費税区分: '非課税' }),
+    Object.assign({}, base, { お客様番号: '4002', 利用者名: '区分 不明', 利用者名ｶﾅ: 'ｸﾌﾞﾝ ﾌﾒｲ', 商品: 'T3', 商品名: '手すり KKK-1000', '決定借受料(税抜)': '1,000', 決定卸先消費税区分: '' })
+  ]);
+  const pt = P([
+    { 利用者コード: 'C01', 利用者名: '課税　一郎', 利用者カナ: 'カゼイ　イチロウ', 拠点: 'Z営業所', 商品名: '付属品  HHH-8000', 型式: 'HHH-8000', 金額: '400', 税: '非' },
+    { 利用者コード: 'C01', 利用者名: '課税　一郎', 利用者カナ: 'カゼイ　イチロウ', 拠点: 'Z営業所', 商品名: 'ベッド  JJJ-9000', 型式: 'JJJ-9000', 金額: '9,000', 税: '非' },
+    { 利用者コード: 'C02', 利用者名: '区分　不明', 利用者カナ: 'クブン　フメイ', 拠点: 'Z営業所', 商品名: '手すり  KKK-1000', 型式: 'KKK-1000', 金額: '1,000', 税: '10%' }
+  ]);
+  const r3 = C.loadRenta(rt), p3 = C.loadParaCsv(pt);
+  const res3 = M.reconcile(p3.rows, r3.rows, {
+    mappings: [{ bumon: 'X部門', shiireCd: '900', kyoten: ['Z営業所'], ignore: false }],
+    confirmed: [], excludeParaRules: [], excludeRentaRules: []
+  });
+  const kz = res3.persons.find(v => v.label.replace(/[\s　]/g, '') === '課税一郎');
+  ok(kz && kz.diff === 0 && kz.taxMis.length === 1, '税抜の金額が同じでも、課税区分の違いを1件見つける');
+  ok(kz && kz.judge === '課税区分違い', '判定は「課税区分違い」になる');
+  ok(kz && kz.taxMis[0].r.shohinCd === 'T1', '区分が同じ明細は違いとして数えない');
+  const km = res3.persons.find(v => v.label.replace(/[\s　]/g, '') === '区分不明');
+  ok(km && km.taxMis.length === 0 && km.flags.includes('課税区分が読めない'), '区分が読めない明細は違いにせず、注記を付ける');
+  ok(res3.unresolved.taxUnknown === 1 && !res3.canSayNoDiff, '区分が読めない人がいれば「不一致なし」とは言わない');
+  ok(res3.taxTotals.para['非'] === 9400 && res3.taxTotals.renta['課'] === 400 && res3.taxTotals.renta['不明'] === 1000,
+    '課税区分別の合計を両側で出す');
+}
+
+console.log('== 卸元の拠点を対象外にする ==');
+{
+  const rt = R([
+    Object.assign({}, base, { お客様番号: '5001', 利用者名: '本体 花子', 利用者名ｶﾅ: 'ﾎﾝﾀｲ ﾊﾅｺ', 商品: 'U1', 商品名: '品目 LLL-1000', '決定借受料(税抜)': '1,000', 決定卸先消費税区分: '外税' }),
+    Object.assign({}, base, { 部門名: 'V部門', 仕入先コード: '901', お客様番号: '5002', 利用者名: '支店 次郎', 利用者名ｶﾅ: 'ｼﾃﾝ ｼﾞﾛｳ', 商品: 'U2', 商品名: '品目 MMM-2000', '決定借受料(税抜)': '2,000', 決定卸先消費税区分: '外税' })
+  ]);
+  const pt = P([
+    { 利用者コード: 'D01', 利用者名: '本体　花子', 利用者カナ: 'ホンタイ　ハナコ', 拠点: 'Z営業所', 商品名: '品目  LLL-1000', 型式: 'LLL-1000', 金額: '1,000', 税: '10%' },
+    { 利用者コード: 'D02', 利用者名: '支店　次郎', 利用者カナ: 'シテン　ジロウ', 拠点: 'W営業所', 商品名: '品目  MMM-2000', 型式: 'MMM-2000', 金額: '2,500', 税: '10%' }
+  ]);
+  const mk = () => {
+    const r = C.loadRenta(rt), p = C.loadParaCsv(pt);
+    return { r: r.rows, p: p.rows };
+  };
+  const maps = [
+    { bumon: 'X部門', shiireCd: '900', kyoten: ['Z営業所'], ignore: false },
+    { bumon: 'V部門', shiireCd: '901', kyoten: [], ignore: true }
+  ];
+  const a = mk();
+  const resA = M.reconcile(a.p, a.r, { mappings: maps, confirmed: [], excludeParaRules: [], excludeRentaRules: [] });
+  ok(resA.unresolved.outscope === 1, '組だけ対象外にしても、卸元側の拠点は未解決の範囲外に残る');
+  const b = mk();
+  const resB = M.reconcile(b.p, b.r, { mappings: maps, ignoreKyoten: ['W営業所'], confirmed: [], excludeParaRules: [], excludeRentaRules: [] });
+  ok(resB.unresolved.outscope === 0, '拠点も対象外にすれば、未解決として数えない');
+  ok(b.p.find(x => x.kyoten === 'W営業所').bucket === M.BUCKET.OUTSCOPE, '対象外の拠点の行は範囲外バケットに入る（検算には残る）');
+  ok(resB.checksum.ok && resB.scopedDiff === 0, '対象外にした拠点の差額は判定対象に入らない');
+  const c = mk();
+  M.reconcile(c.p, c.r, { mappings: maps, ignoreKyoten: ['Z営業所'], confirmed: [], excludeParaRules: [], excludeRentaRules: [] });
+  ok(c.p.find(x => x.kyoten === 'Z営業所').inScope, '組に割り当てた拠点は、対象外の指定より割り当てを優先する');
+}
+
 console.log('\n' + (fail ? '!! ' + fail + ' 件失敗' : '全項目 OK'));
 process.exit(fail ? 1 : 0);

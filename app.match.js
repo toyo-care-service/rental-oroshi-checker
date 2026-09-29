@@ -290,7 +290,7 @@ function matchExclude(row, rules) {
  */
 function reconcile(paraRows, rentaRows, opts) {
   const o = opts || {};
-  C.applyScope(rentaRows, paraRows, o.mappings || []);
+  C.applyScope(rentaRows, paraRows, o.mappings || [], o.ignoreKyoten || []);
 
   // 1) バケットの前段（金額不明 → 範囲外 → 除外）を先に確定させる
   const preBucket = (row, excl) => {
@@ -331,11 +331,20 @@ function reconcile(paraRows, rentaRows, opts) {
     if (res.capped) v.flags.push('明細の組み合わせが多く割当を確定できない');
     if (v.onlyPara.length || v.onlyRenta.length || res.unstable) v.flags.push('明細説明未確定');
 
+    // 税抜の金額が同じでも、課税区分が違えば支払額（税込）が変わる（設計書 8.4）
+    v.taxMis = v.pairs.filter(pr => {
+      const a = C.taxClass(pr.p.tax), b = C.taxClass(pr.r.tax);
+      return a && b && a !== b;
+    });
+    v.taxUnknown = v.pairs.filter(pr => !C.taxClass(pr.p.tax) || !C.taxClass(pr.r.tax)).length;
+    if (v.taxUnknown) v.flags.push('課税区分が読めない');
+
     v.tp = v.para.reduce((s, x) => s + (x.amount || 0), 0);
     v.tr = v.renta.reduce((s, x) => s + (x.amount || 0), 0);
     v.diff = v.tr - v.tp;
-    v.judge = v.diff === 0 ? '一致'
-      : (!v.renta.length ? 'スマートれん太に無い' : (!v.para.length ? '卸元に無い' : '金額不一致'));
+    v.judge = v.diff !== 0
+      ? (!v.renta.length ? 'スマートれん太に無い' : (!v.para.length ? '卸元に無い' : '金額不一致'))
+      : (v.taxMis.length ? '課税区分違い' : '一致');
     // 弱い根拠で結んだうえに金額も違うものは強く出す（設計書 7.2）
     if (v.diff !== 0 && TIER_FLAG[v.tier]) v.flags.push('要確認(強)');
   });
@@ -371,11 +380,21 @@ function reconcile(paraRows, rentaRows, opts) {
     nameCheck: persons.filter(v => v.flags.includes('名寄せ要確認')).length,
     detailCheck: persons.filter(v => v.flags.includes('明細説明未確定')).length,
     weakTier: persons.filter(v => v.flags.some(f => f.indexOf('根拠:') === 0)).length,
-    noScope: persons.filter(v => v.flags.includes('拠点が特定できない')).length
+    noScope: persons.filter(v => v.flags.includes('拠点が特定できない')).length,
+    taxUnknown: persons.filter(v => v.taxUnknown).length
   };
   const canSayNoDiff = Object.values(unresolved).every(n => n === 0);
 
-  return { persons, buckets, checksum, scopedDiff, unresolved, canSayNoDiff, totalPara, totalRenta, capped };
+  // 判定対象（突合済み＋片側のみ）の課税区分別の合計。請求書の課税・非課税の小計と見比べるため
+  const taxTotals = {};
+  [['para', paraRows], ['renta', rentaRows]].forEach(([side, rows]) => {
+    const t = { '課': 0, '非': 0, '不明': 0 };
+    rows.filter(x => x.bucket === BUCKET.MATCHED || x.bucket === BUCKET.ONESIDE)
+      .forEach(x => { t[C.taxClass(x.tax) || '不明'] += (x.amount || 0); });
+    taxTotals[side] = t;
+  });
+
+  return { persons, buckets, checksum, scopedDiff, unresolved, canSayNoDiff, totalPara, totalRenta, capped, taxTotals };
 }
 
 // ==================== 対応表の自動提案（設計書 6） ====================

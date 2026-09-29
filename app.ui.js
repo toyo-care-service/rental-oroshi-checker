@@ -9,7 +9,7 @@
 
   const S = {
     renta: null, para: null, rentaName: '', paraName: '',
-    period: '', suggest: null, mappings: [], confirmed: [], dupKyoten: [],
+    period: '', suggest: null, mappings: [], ignoreKyoten: [], confirmed: [], dupKyoten: [],
     exclPara: [], exclRenta: [], result: null
   };
 
@@ -34,7 +34,7 @@
   function cfgObject() {
     return {
       version: CFG_VERSION, savedAt: new Date().toISOString(),
-      mappings: S.mappings, confirmed: S.confirmed,
+      mappings: S.mappings, ignoreKyoten: S.ignoreKyoten, confirmed: S.confirmed,
       exclPara: S.exclPara, exclRenta: S.exclRenta,
       threshold: Number($('threshold').value) || 0,
       showOneSide: $('chkOneSide').checked
@@ -48,9 +48,10 @@
       if (typeof m.bumon !== 'string' || typeof m.shiireCd !== 'string') return '対応表の中身が正しくありません';
       if (!m.ignore && !Array.isArray(m.kyoten)) return '対応表の拠点が正しくありません';
     }
-    for (const k of ['confirmed', 'exclPara', 'exclRenta']) {
+    for (const k of ['confirmed', 'exclPara', 'exclRenta', 'ignoreKyoten']) {
       if (o[k] != null && !Array.isArray(o[k])) return k + ' の形式が正しくありません';
     }
+    if ((o.ignoreKyoten || []).some(k => typeof k !== 'string' || !k)) return '対象外の拠点が正しくありません';
     for (const c of (o.confirmed || [])) {
       if (typeof c.paraKey !== 'string' || typeof c.rentaKey !== 'string' || !c.paraKey || !c.rentaKey) {
         return '確認済み対応表の中身が正しくありません';
@@ -97,6 +98,10 @@
   }
   function applyCfg(o) {
     S.mappings = o.mappings || [];
+    // 組に割り当てた拠点は対象外より優先される（集計側と同じ）。画面と出力の表示をそれに合わせる
+    const assigned = new Set();
+    S.mappings.filter(m => !m.ignore).forEach(m => (m.kyoten || []).forEach(k => assigned.add(k)));
+    S.ignoreKyoten = (o.ignoreKyoten || []).filter(k => !assigned.has(k));
     S.confirmed = o.confirmed || [];
     S.exclPara = o.exclPara || [];
     S.exclRenta = o.exclRenta || [];
@@ -228,6 +233,23 @@
     tr.appendChild(el('th', null, '対象外'));
     thead.appendChild(tr);
 
+    // 卸元側の拠点を対象外にする行。組を対象外にするだけでは卸元側の行が範囲外（未解決）に残るため
+    const igRow = el('tr', 'ignore-row');
+    const lab = el('td', null, '卸元のこの拠点は突合しない（対象外）');
+    lab.colSpan = 5;
+    igRow.appendChild(lab);
+    kyoten.forEach(k => {
+      const td = el('td');
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = S.ignoreKyoten.includes(k);
+      cb.setAttribute('aria-label', k + ' を対象外にする');
+      cb.addEventListener('change', () => setKyotenIgnore(k, cb.checked));
+      td.appendChild(cb); igRow.appendChild(td);
+    });
+    igRow.appendChild(el('td'));
+    tbody.appendChild(igRow);
+
     S.suggest.groups.forEach(g => {
       const cur = S.mappings.find(m => m.bumon === g.bumon && m.shiireCd === g.shiireCd);
       const row = el('tr');
@@ -252,6 +274,7 @@
       tdIg.appendChild(ig); row.appendChild(tdIg);
       tbody.appendChild(row);
     });
+
     renderMapMsg();
   }
 
@@ -260,14 +283,35 @@
     if (!m) { m = { bumon: g.bumon, shiireCd: g.shiireCd, kyoten: [], ignore: false }; S.mappings.push(m); }
     if (isIgnore) {
       m.ignore = on;
-      if (on) m.kyoten = [];
+      if (on) {
+        // 組を対象外にしたら、その組だけが受け持っていた拠点も対象外にする
+        (m.kyoten || []).filter(k => !S.mappings.some(x => x !== m && !x.ignore && (x.kyoten || []).includes(k)))
+          .forEach(k => { if (!S.ignoreKyoten.includes(k)) S.ignoreKyoten.push(k); });
+        m.kyoten = [];
+      }
     } else {
       m.ignore = false;
       const set = new Set(m.kyoten || []);
       if (on) set.add(kyotenName); else set.delete(kyotenName);
       m.kyoten = [...set];
+      if (on) S.ignoreKyoten = S.ignoreKyoten.filter(k => k !== kyotenName);
     }
     S.mappings = S.mappings.filter(x => x.ignore || (x.kyoten && x.kyoten.length));
+    saveCfg(); renderMap(); refresh();
+  }
+
+  function setKyotenIgnore(k, on) {
+    if (on) {
+      if (!S.ignoreKyoten.includes(k)) S.ignoreKyoten.push(k);
+      // 対象外にした拠点は組から外す。突き合わせる拠点が無くなった組は対象外にする
+      S.mappings.forEach(m => {
+        if (m.ignore || !(m.kyoten || []).includes(k)) return;
+        m.kyoten = m.kyoten.filter(x => x !== k);
+        if (!m.kyoten.length) m.ignore = true;
+      });
+    } else {
+      S.ignoreKyoten = S.ignoreKyoten.filter(x => x !== k);
+    }
     saveCfg(); renderMap(); refresh();
   }
 
@@ -289,7 +333,8 @@
       msg(box, 'warn', '同じ拠点が複数の組に割り当てられています：' + [...dup].join('、') +
         '。どの組と突き合わせるかが決まらないため、1つに絞ってください。');
     }
-    const missing = S.suggest.kyoten.filter(k => !covered.has(k.kyoten));
+    const ignored = S.suggest.kyoten.filter(k => !covered.has(k.kyoten) && S.ignoreKyoten.includes(k.kyoten));
+    const missing = S.suggest.kyoten.filter(k => !covered.has(k.kyoten) && !S.ignoreKyoten.includes(k.kyoten));
     if (!mapped.length) {
       msg(box, 'warn', '突合する組が1つも指定されていません。このままでは突合できません。');
       return;
@@ -298,9 +343,19 @@
       const amt = missing.reduce((s, k) => s + k.amount, 0);
       msg(box, 'warn', 'どの組にも割り当てられていない拠点があります：' +
         missing.map(k => k.kyoten + '（' + k.count + '行 ' + yen(k.amount) + '円）').join('、') +
-        '。合計 ' + yen(amt) + '円 が突合されません。');
+        '。合計 ' + yen(amt) + '円 が突合されません。突合しない拠点なら、表の一番上の行で「対象外」にしてください。');
     } else {
-      msg(box, 'ok', '卸元の全拠点が、いずれかの組に割り当てられています。');
+      msg(box, 'ok', '卸元の全拠点が、いずれかの組に割り当てられているか、対象外になっています。');
+    }
+    if (ignored.length) {
+      msg(box, 'note', '対象外にした卸元の拠点：' +
+        ignored.map(k => k.kyoten + '（' + k.count + '行 ' + yen(k.amount) + '円）').join('、') + '。この分は突合しません。');
+    }
+    const unset = S.suggest.groups.filter(g => !S.mappings.some(m => m.bumon === g.bumon && m.shiireCd === g.shiireCd));
+    if (unset.length) {
+      msg(box, 'warn', '拠点も「対象外」も指定していない組が ' + unset.length + ' 組あります（' +
+        unset.slice(0, 5).map(g => g.bumon + '×' + g.shiireCd).join('、') + (unset.length > 5 ? ' ほか' : '') +
+        '）。このままだと範囲外として判定不能に残ります。');
     }
   }
 
@@ -346,6 +401,7 @@
     show('cardMap', filesOk);
     show('cardOpt', filesOk);
     show('cardRun', filesOk);
+    renderTaxMsg();
     if (!filesOk) { show('cardResult', false); return; }
     $('periodText').textContent = S.period;
     $('periodText2').textContent = S.period;
@@ -359,13 +415,24 @@
     $('runHint').textContent = reasons.length ? reasons.join(' と ') + ' が済んでいません' : '';
   }
 
+  /** 課税区分を1行も読めないファイルに注意を出す。列が無い・xlsx の列位置が違う場合を行の中身で拾う */
+  function renderTaxMsg() {
+    const box = $('taxMsg'); clear(box);
+    [[S.renta, '支払予定表', '決定卸先消費税区分'], [S.para, '請求データ', '税']].forEach(([f, label, col]) => {
+      if (f && f.rows.length && f.rows.every(x => !C.taxClass(x.tax))) {
+        msg(box, 'note', label + 'の課税区分（「' + col + '」の列）を1行も読み取れません。列が無いか、形式が違います。' +
+          '課税区分の照合はできず、突合した人は「課税区分が読めない」になります。');
+      }
+    });
+  }
+
   // ---------- 実行 ----------
   function run() {
     const t0 = performance.now();
     S.renta.rows.forEach(r => { r.bucket = null; });
     S.para.rows.forEach(p => { p.bucket = null; });
     const res = M.reconcile(S.para.rows, S.renta.rows, {
-      mappings: S.mappings, confirmed: S.confirmed,
+      mappings: S.mappings, ignoreKyoten: S.ignoreKyoten, confirmed: S.confirmed,
       excludeParaRules: S.exclPara.filter(r => r.value),
       excludeRentaRules: S.exclRenta.filter(r => r.value)
     });
@@ -380,23 +447,34 @@
   function needList() {
     const th = Number($('threshold').value) || 0;
     const showOne = $('chkOneSide').checked;
+    // 課税区分の違いはしきい値に関係なく出す（税抜の差額が0でも支払額は変わるため）
     return S.result.persons
-      .filter(v => v.diff !== 0)
-      .filter(v => Math.abs(v.diff) > th)
+      .filter(v => v.diff !== 0 || v.taxMis.length)
+      .filter(v => Math.abs(v.diff) > th || v.taxMis.length)
       .filter(v => showOne || (v.para.length && v.renta.length))
-      .sort((a, b) => {
-        const na = a.renta.length ? a.renta[0].kokyakuNo : '';
-        const nb = b.renta.length ? b.renta[0].kokyakuNo : '';
-        const ia = /^\d+$/.test(na) ? Number(na) : Infinity;
-        const ib = /^\d+$/.test(nb) ? Number(nb) : Infinity;
-        return ia - ib || String(a.label).localeCompare(String(b.label), 'ja');
-      });
+      .sort((a, b) => JA.compare(kanaOf(a), kanaOf(b)) || noOf(a) - noOf(b) || JA.compare(a.label, b.label));
   }
 
+  // 50音順は卸元のカナを優先する（卸元の請求書と同じ並びで見比べられるように）
+  const JA = new Intl.Collator('ja');
+  function kanaOf(v) {
+    const p = v.para.find(x => x.riyoshaKana);
+    const r = v.renta.find(x => x.kana);
+    return C.kanaSortKey(p ? p.riyoshaKana : (r ? r.kana : v.label));
+  }
+  function noOf(v) {
+    const n = v.renta.length ? v.renta[0].kokyakuNo : '';
+    return /^\d+$/.test(n) ? Number(n) : Number.MAX_SAFE_INTEGER;
+  }
+
+  const TAX_LABEL = { '課': '課税', '非': '非課税' };
   function detailLines(v) {
     const out = [];
     v.pairs.filter(pr => pr.p.amount !== pr.r.amount).forEach(pr =>
       out.push(pr.r.shohinNm + '：' + yen(pr.r.amount) + '円 → ' + yen(pr.p.amount) + '円'));
+    v.taxMis.forEach(pr =>
+      out.push(pr.r.shohinNm + '：課税区分が違う（スマートれん太 ' + TAX_LABEL[C.taxClass(pr.r.tax)] +
+        ' → 卸元 ' + TAX_LABEL[C.taxClass(pr.p.tax)] + '）'));
     v.onlyPara.forEach(p =>
       out.push(p.shohinNm + '：れん太に無し（卸元 ' + yen(p.amount) + '円）'));
     v.onlyRenta.forEach(r =>
@@ -426,9 +504,16 @@
     if (u.detailCheck) items.push('明細の対応がつかない ' + u.detailCheck + '人');
     if (u.weakTier) items.push('弱い根拠で結んだ ' + u.weakTier + '人');
     if (u.noScope) items.push('拠点が特定できない ' + u.noScope + '人');
+    if (u.taxUnknown) items.push('課税区分が読めない ' + u.taxUnknown + '人');
     if (items.length) {
       msg(box, 'note', '判定不能な部分が残っています：' + items.join('、') +
         '。「不一致なし」とは言えない状態です。');
+    }
+    const taxPeople = res.persons.filter(v => v.taxMis.length);
+    if (taxPeople.length) {
+      msg(box, 'note', '課税区分（課税／非課税）が食い違う明細が ' +
+        taxPeople.reduce((s, v) => s + v.taxMis.length, 0) + '件（' + taxPeople.length +
+        '人）あります。税抜の金額が同じでも、支払額（税込）が変わります。一覧に含めています。');
     }
     if (res.capped) msg(box, 'note', '明細の組み合わせが多すぎて、探索を打ち切った利用者があります。');
 
@@ -500,6 +585,12 @@
     bb.appendChild(t);
     bb.appendChild(el('p', 'mini',
       '検算：全行の差 ' + yen(res.checksum.lhs) + '円 ＝ 各区分の差の合計 ' + yen(res.checksum.rhs) + '円'));
+    bb.appendChild(el('p', 'mini', taxTotalsText(res)));
+  }
+
+  function taxTotalsText(res) {
+    const f = t => '課税 ' + yen(t['課']) + '円・非課税 ' + yen(t['非']) + '円' + (t['不明'] ? '・区分不明 ' + yen(t['不明']) + '円' : '');
+    return '課税区分別（税抜）：卸元 ' + f(res.taxTotals.para) + '／スマートれん太 ' + f(res.taxTotals.renta);
   }
 
   /** 弱い根拠で結んだ人を「確認済み」に昇格させる（設計書 7.2） */
@@ -530,7 +621,7 @@
     { key: 'tr', label: 'スマートれん太', num: true, get: v => v.tr },
     { key: 'tp', label: '卸元の請求', num: true, get: v => v.tp },
     { key: 'diff', label: '差額', num: true, get: v => v.diff },
-    { key: 'cnt', label: '件数', num: true, get: v => v.pairs.filter(p => p.p.amount !== p.r.amount).length + v.onlyPara.length + v.onlyRenta.length },
+    { key: 'cnt', label: '件数', num: true, get: v => v.pairs.filter(p => p.p.amount !== p.r.amount || v.taxMis.includes(p)).length + v.onlyPara.length + v.onlyRenta.length },
     { key: 'detail', label: '不一致の内容', get: v => detailLines(v) },
     { key: 'flags', label: '注記', get: v => v.flags }
   ];
@@ -564,13 +655,20 @@
         exc.push(b + '：卸元 ' + x.para.count + '行 ' + yen(x.para.amount) + '円／基幹 ' + x.renta.count + '行 ' + yen(x.renta.amount) + '円');
       }
     });
+    aoa.push([safe(taxTotalsText(res))]);
     aoa.push([safe('対象外の内訳　' + (exc.length ? exc.join('　') : 'なし'))]);
+    const igK = S.ignoreKyoten.filter(k => S.para.rows.some(p => p.kyoten === k));
+    const igG = S.mappings.filter(m => m.ignore).length;
+    aoa.push([safe('対象外にした卸元の拠点：' + (igK.length ? igK.join('、') : 'なし') +
+      '　対象外にした部門×仕入先：' + igG + '組')]);
     const u = res.unresolved;
     aoa.push([safe('判定不能：範囲外' + u.outscope + '行／金額不明' + u.unknown + '行／名寄せ要確認' + u.nameCheck +
       '人／明細未確定' + u.detailCheck + '人／弱い根拠' + u.weakTier + '人／拠点不明' + (u.noScope || 0) + '人' +
+      '／課税区分不明' + (u.taxUnknown || 0) + '人' +
       (res.checksum.ok ? '　検算：成立' : '　検算：未成立'))]);
     const th = Number($('threshold').value) || 0;
-    if (th > 0) aoa.push([safe('差額 ' + th + '円以下は表示していません')]);
+    if (th > 0) aoa.push([safe('差額 ' + th + '円以下は表示していません（課税区分の違いは金額にかかわらず表示）')]);
+    aoa.push([safe('並び順：利用者名の50音順（卸元のカナを優先）')]);
     aoa.push([]);
     aoa.push(COLUMNS.map(c => c.label));
     list.forEach(v => {
@@ -602,12 +700,16 @@
 
   $('btnSuggest').addEventListener('click', () => {
     if (!S.suggest) return;
-    S.mappings = S.suggest.groups.map(g => g.suggestIgnore
-      ? { bumon: g.bumon, shiireCd: g.shiireCd, kyoten: [], ignore: true }
-      : { bumon: g.bumon, shiireCd: g.shiireCd, kyoten: g.suggestKyoten.slice(), ignore: false });
+    // 対象外にしてある拠点は候補に入れない（毎月押しても設定が戻らないように）
+    S.mappings = S.suggest.groups.map(g => {
+      const ky = g.suggestKyoten.filter(k => !S.ignoreKyoten.includes(k));
+      return ky.length
+        ? { bumon: g.bumon, shiireCd: g.shiireCd, kyoten: ky, ignore: false }
+        : { bumon: g.bumon, shiireCd: g.shiireCd, kyoten: [], ignore: true };
+    });
     saveCfg(); renderMap(); refresh();
   });
-  $('btnMapClear').addEventListener('click', () => { S.mappings = []; saveCfg(); renderMap(); refresh(); });
+  $('btnMapClear').addEventListener('click', () => { S.mappings = []; S.ignoreKyoten = []; saveCfg(); renderMap(); refresh(); });
 
   $('btnAddExclPara').addEventListener('click', () => { S.exclPara.push({ field: 'model', value: '', amountIn: [] }); renderExcl(); });
   $('btnAddExclRenta').addEventListener('click', () => { S.exclRenta.push({ field: 'shohinNm', value: '', amountIn: [] }); renderExcl(); });

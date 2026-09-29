@@ -267,6 +267,24 @@ function loadParaXlsxRows(sheets) {
 
 const MARK_NAME = { '○': '新規', '●': '解約', '▲': '中断', '□': '差分' };
 
+/** 課税区分を「課」「非」にそろえる。読めなければ null（課税扱いにも非課税扱いにもしない） */
+function taxClass(s) {
+  const t = String(s == null ? '' : s).normalize('NFKC').replace(SPACE_RE, '');
+  if (!t) return null;
+  if (/^(非|非課税|不課税|免税|対象外)$/.test(t)) return '非';
+  if (/^(課|課税|外税|内税)$/.test(t)) return '課';
+  const m = t.match(/^(\d+(?:\.\d+)?)%$/);
+  if (m) return Number(m[1]) > 0 ? '課' : '非';
+  return null;
+}
+
+/** 50音順の並べ替えキー。半角カナ・ひらがなの違いをならす。
+    姓と名の区切りは残す（卸元の請求データと同じく、姓が短い人を、その姓で始まる長い姓の人より前に置くため） */
+function kanaSortKey(s) {
+  return String(s == null ? '' : s).normalize('NFKC').trim().replace(SPACE_RE, ' ')
+    .replace(/[ぁ-ゖ]/g, ch => String.fromCharCode(ch.charCodeAt(0) + 0x60));
+}
+
 function makeParaRec(o) {
   const rec = Object.assign({ src: 'para' }, o);
   rec.amount = parseMoney(o.amountRaw);
@@ -278,17 +296,18 @@ function makeParaRec(o) {
 
 // ==================== 突合範囲（設計書 6） ====================
 
-/** 対応表: [{ bumon, shiireCd, kyoten: [..] }] */
-function applyScope(rentaRows, paraRows, mappings) {
+/** 対応表: [{ bumon, shiireCd, kyoten: [..] }]、ignoreKyoten: 卸元側で対象外にした拠点 */
+function applyScope(rentaRows, paraRows, mappings, ignoreKyoten) {
   const live = mappings.filter(m => !m.ignore);
   const skip = mappings.filter(m => m.ignore);
   const rentaKeys = new Set(live.map(m => m.bumon + '\t' + m.shiireCd));
-  // 「対象外」と明示された組は範囲外に入るが、未解決としては数えない
+  // 「対象外」と明示された組・拠点は範囲外に入るが、未解決としては数えない
   const ignoredKeys = new Set(skip.map(m => m.bumon + '\t' + m.shiireCd));
   const kyotenSet = new Set();
   live.forEach(m => (m.kyoten || []).forEach(k => kyotenSet.add(k)));
-  const ignoredKyoten = new Set();
+  const ignoredKyoten = new Set(ignoreKyoten || []);
   skip.forEach(m => (m.kyoten || []).forEach(k => ignoredKyoten.add(k)));
+  kyotenSet.forEach(k => ignoredKyoten.delete(k));
   // 対応表の組ごとにスコープIDを振る。名寄せは同じスコープの中だけで行う（設計書 6）
   const scopeOfRenta = new Map();
   const scopeOfKyoten = new Map();
@@ -339,7 +358,8 @@ function discoverGroups(rentaRows, paraRows) {
 const __core = {
   normName, normKana, normProduct, normModel, productTokens, modelMatches,
   similarity, facilityNorm, parseMoney, parseDelimited, unquote,
-  loadRenta, loadParaCsv, loadParaXlsxRows, applyScope, discoverGroups, MARK_NAME
+  loadRenta, loadParaCsv, loadParaXlsxRows, applyScope, discoverGroups, MARK_NAME,
+  taxClass, kanaSortKey
 };
 if (typeof module !== 'undefined' && module.exports) module.exports = __core;
 if (typeof window !== 'undefined') window.AppCore = __core;
