@@ -200,15 +200,16 @@ const goodCfg = () => ({
     const flat = w.rows.map(r => r.join('|'));
     ok(w.sheet === '金額不一致一覧' && w.rows.length > 0, '書き出したファイルを、別の実装（SheetJS）で読み戻せる');
     const sumAt = w.rows.findIndex(r => r[0] === '不一致の人数');
-    ok(sumAt === 1 && w.rows[2][0] === '1人' && w.rows[2][3] === 6000 && w.rows[2][4] === 5700 && w.rows[2][5] === 300, '題名のすぐ下に、人数と合計（スマートれん太・卸元・差額）が数値で出る');
+    ok(sumAt === 1 && w.rows[2][0] === '1人' && w.rows[1][4] === 'スマートれん太 計' && w.rows[2][4] === 6000 && w.rows[1][6] === '卸元の請求 計' && w.rows[2][6] === 5700 && w.rows[1][8] === '差額 計' && w.rows[2][8] === 300, '題名のすぐ下に、人数と合計が出る。合計は、それぞれの金額の列の上に数値で置く');
     const headAt = w.rows.findIndex(r => r[0] === 'お客様番号');
-    ok(headAt > 2 && w.rows[headAt].join('|') === 'お客様番号|お客様名|利用者名|スマートれん太|卸元の請求|差額|件数|不一致の内容|注記|両側の表記', '表の見出しが並ぶ');
+    ok(headAt > 2 && w.rows[headAt].join('|') === 'お客様番号|お客様名|利用者名|商品名|スマートれん太|税区分|卸元の請求|税区分|差額|不一致の内容|注記|両側の表記', '表の見出しが並ぶ（金額の右隣に、それぞれの税区分）');
     const row = w.rows[headAt + 1];
-    ok(row[2].replace(/[\s　]/g, '') === '試験一号' && row[3] === 4000 && row[4] === 3700 && row[5] === 300, '表の金額は数値として入る（桁区切りや赤字は書式で付ける）');
     const row2 = w.rows[headAt + 2] || [];
-    ok(/円 → /.test(row[7]) && !/\n|\\n|BS/.test(row[7]) && /EEE-5000：れん太に無し/.test(row2[7]), '不一致の内容は、明細1件を1行にして入る');
-    ok(row[6] === 2 && [0, 1, 2, 3, 4, 5, 6, 9].every(i => row2[i] === '' || row2[i] == null), '同じ人の2行目からは、番号・氏名・金額・件数を空にする');
-    ok(/合算/.test(row[8]) && /明細説明未確定/.test(row[8]) && row2[8] === '明細説明未確定', '注記は最初の行に全部出し、続きの行には「明細説明未確定」だけを繰り返す');
+    ok(row[2].replace(/[\s　]/g, '') === '試験一号' && /AAA-1000/.test(row[3]) && row[4] === 4000 && row[5] === '課税' && row[6] === 3000 && row[7] === '課税' && row[8] === 1000 && row[9] === '金額が違う', '1行に、明細1件の商品名・両側の金額と税区分・差額・内容が並ぶ。金額は数値');
+    ok(/EEE-5000/.test(row2[3]) && row2[4] === '' && row2[5] === '' && row2[6] === 700 && row2[7] === '課税' && row2[8] === -700 && row2[9] === 'れん太に無し', '片側にしか無い明細は、無い側の金額と税区分を空にする');
+    ok([0, 1, 2, 11].every(i => row2[i] === '' || row2[i] == null), '同じ人の2行目からは、番号・氏名・両側の表記を空にする');
+    ok(row[8] + row2[8] === 300, '明細の差額を足すと、その人の差額になる');
+    ok(/合算/.test(row[10]) && /明細説明未確定/.test(row[10]) && row2[10] === '明細説明未確定', '注記は最初の行に全部出し、続きの行には「明細説明未確定」だけを繰り返す');
     ok((w.rows[headAt + 3] || []).join('') === '', '表の行数は、不一致の明細の数と同じ');
     ok(!flat.slice(0, headAt).some(x => /^注意：/.test(x)), '異常が無ければ、注意は出さない');
     ok(flat.some(x => /^この一覧の条件/.test(x)) && flat.some(x => /^入力ファイル：/.test(x)) && flat.findIndex(x => /^入力ファイル：/.test(x)) > headAt + 1, '細かい条件は表の下にまとめる');
@@ -216,6 +217,16 @@ const goodCfg = () => ({
     ok(/xl\/styles\.xml/.test(raw) && /4F46E5/.test(raw) && /wrapText="1"/.test(raw) && /\[Red\]/.test(raw), '見出しの色・折り返し・マイナスの赤字の書式が入っている');
     ok(/<pane ySplit="/.test(raw) && /orientation="landscape"/.test(raw) && /_xlnm.Print_Titles/.test(raw), '見出しの固定・横向き印刷・印刷時の見出しの繰り返しが入っている');
     ok(!/<autoFilter/.test(raw), '絞り込み（並べ替え）は付けない。並べ替えると、続きの行が誰の明細か分からなくなる');
+
+    // 税区分が違う明細は、金額が同じでも1行に出て、両側の税区分が並ぶ
+    const u3 = boot(goodCfg());
+    await loadBoth(u3, RENTA, P(paraRows.map(r => (r.利用者コード === 'A02' ? Object.assign({}, r, { 税: '非' }) : r))));
+    await runNow(u3);
+    await u3.$('btnXlsx').click();
+    const w3 = u3.written();
+    const t3 = w3.rows.slice(w3.rows.findIndex(r => r[0] === 'お客様番号') + 1).find(r => r[9] === '課税区分が違う');
+    ok(!!t3 && t3[4] === 2000 && t3[5] === '課税' && t3[6] === 2000 && t3[7] === '非課税' && t3[8] === 0, '税区分だけが違う明細は、同じ金額と、違う税区分が並ぶ');
+    ok(/FFB42318/.test(Buffer.from(w3.bytes).toString('latin1')) && !/FFB42318/.test(raw), '税区分が違う明細だけ、税区分を赤字にする');
 
     // 突合していない行が残るときは、上に注意を出す
     const c = goodCfg(); c.mappings[1] = { bumon: 'X部門', shiireCd: '905', kyoten: ['K営業所'], ignore: false };

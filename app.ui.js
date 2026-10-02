@@ -618,22 +618,33 @@
   }
 
   const TAX_LABEL = { '課': '課税', '非': '非課税' };
-  function detailLines(v) {
+  // 税区分の表示。読めない値は「不明」、値が無ければ空
+  const taxLabel = x => {
+    const t = C.taxClass(x.tax);
+    return t ? TAX_LABEL[t] : (String(x.tax == null ? '' : x.tax).trim() ? '不明' : '');
+  };
+  /** 不一致の明細を1件ずつ返す。画面の文言も Excel の行も、ここから作る（件数と行数をそろえる） */
+  function detailItems(v) {
     const out = [];
-    const taxText = pr => '課税区分が違う（スマートれん太 ' + TAX_LABEL[C.taxClass(pr.r.tax)] +
-      ' → 卸元 ' + TAX_LABEL[C.taxClass(pr.p.tax)] + '）';
-    // 金額も課税区分も違う明細は1件にまとめる（件数と行数をそろえる）
-    v.pairs.filter(pr => pr.p.amount !== pr.r.amount).forEach(pr =>
-      out.push(pr.r.shohinNm + '：' + yen(pr.r.amount) + '円 → ' + yen(pr.p.amount) + '円' +
-        (v.taxMis.includes(pr) ? '、' + taxText(pr) : '')));
+    // 金額も課税区分も違う明細は1件にまとめる
+    v.pairs.filter(pr => pr.p.amount !== pr.r.amount).forEach(pr => {
+      const tm = v.taxMis.includes(pr);
+      out.push({ name: pr.r.shohinNm, r: pr.r, p: pr.p, taxMis: tm, kind: tm ? '金額と課税区分が違う' : '金額が違う' });
+    });
     v.taxMis.filter(pr => pr.p.amount === pr.r.amount).forEach(pr =>
-      out.push(pr.r.shohinNm + '：' + taxText(pr)));
-    v.onlyPara.forEach(p =>
-      out.push(p.shohinNm + '：れん太に無し（卸元 ' + yen(p.amount) + '円）'));
-    v.onlyRenta.forEach(r =>
-      out.push(r.shohinNm + '：卸元に請求無し（スマートれん太 ' + yen(r.amount) + '円）'));
+      out.push({ name: pr.r.shohinNm, r: pr.r, p: pr.p, taxMis: true, kind: '課税区分が違う' }));
+    v.onlyPara.forEach(p => out.push({ name: p.shohinNm, r: null, p, taxMis: false, kind: 'れん太に無し' }));
+    v.onlyRenta.forEach(r => out.push({ name: r.shohinNm, r, p: null, taxMis: false, kind: '卸元に請求無し' }));
     return out;
   }
+  function detailText(d) {
+    const taxText = '課税区分が違う（スマートれん太 ' + (d.r ? taxLabel(d.r) : '') + ' → 卸元 ' + (d.p ? taxLabel(d.p) : '') + '）';
+    if (!d.r) return d.name + '：れん太に無し（卸元 ' + yen(d.p.amount) + '円）';
+    if (!d.p) return d.name + '：卸元に請求無し（スマートれん太 ' + yen(d.r.amount) + '円）';
+    if (d.r.amount === d.p.amount) return d.name + '：' + taxText;
+    return d.name + '：' + yen(d.r.amount) + '円 → ' + yen(d.p.amount) + '円' + (d.taxMis ? '、' + taxText : '');
+  }
+  const detailLines = v => detailItems(v).map(detailText);
 
   function renderResult() {
     const res = S.result, box = $('resultMsgs');
@@ -768,19 +779,38 @@
     return '';
   }
 
-  // kind は Excel の書式の種類（text / num / diff / count）、w は Excel の列幅
+  // 画面の表の列（1人1行）。Excel の列は下の XCOLS
   const COLUMNS = [
-    { key: 'no', label: 'お客様番号', w: 12, kind: 'text', get: v => v.renta.length ? v.renta[0].kokyakuNo : '' },
-    { key: 'kname', label: 'お客様名', w: 20, kind: 'text', get: v => v.renta.length ? v.renta[0].kokyakuNm : '' },
-    { key: 'name', label: '利用者名', w: 18, kind: 'text', get: v => v.label },
-    { key: 'tr', label: 'スマートれん太', w: 15, kind: 'num', num: true, get: v => v.tr },
-    { key: 'tp', label: '卸元の請求', w: 15, kind: 'num', num: true, get: v => v.tp },
-    { key: 'diff', label: '差額', w: 12, kind: 'diff', num: true, get: v => v.diff },
-    { key: 'cnt', label: '件数', w: 6, kind: 'count', num: true, get: v => v.pairs.filter(p => p.p.amount !== p.r.amount || v.taxMis.includes(p)).length + v.onlyPara.length + v.onlyRenta.length },
-    { key: 'detail', label: '不一致の内容', w: 68, kind: 'text', get: v => detailLines(v) },
-    { key: 'flags', label: '注記', w: 30, kind: 'text', get: v => v.flags },
-    { key: 'names', label: '両側の表記', w: 34, kind: 'text', get: v => ((v.flags || []).some(f => f.indexOf('根拠:') === 0) || (v.flags || []).includes('合算')) ? ('卸元 ' + v.paraNames.join('/') + ' ／ れん太 ' + v.rentaNames.join('/')) : '' }
+    { key: 'no', label: 'お客様番号', get: v => v.renta.length ? v.renta[0].kokyakuNo : '' },
+    { key: 'kname', label: 'お客様名', get: v => v.renta.length ? v.renta[0].kokyakuNm : '' },
+    { key: 'name', label: '利用者名', get: v => v.label },
+    { key: 'tr', label: 'スマートれん太', num: true, get: v => v.tr },
+    { key: 'tp', label: '卸元の請求', num: true, get: v => v.tp },
+    { key: 'diff', label: '差額', num: true, get: v => v.diff },
+    { key: 'cnt', label: '件数', num: true, get: v => v.pairs.filter(p => p.p.amount !== p.r.amount || v.taxMis.includes(p)).length + v.onlyPara.length + v.onlyRenta.length },
+    { key: 'detail', label: '不一致の内容', get: v => detailLines(v) },
+    { key: 'flags', label: '注記', get: v => v.flags },
+    { key: 'names', label: '両側の表記', get: v => ((v.flags || []).some(f => f.indexOf('根拠:') === 0) || (v.flags || []).includes('合算')) ? ('卸元 ' + v.paraNames.join('/') + ' ／ れん太 ' + v.rentaNames.join('/')) : '' }
   ];
+
+  // Excel の列（明細1件1行）。kind は書式の種類、w は列幅。per は、人ごと（最初の行にだけ出す）か、明細ごと（全部の行に出す）か。
+  // sum は、上の合計を置く列
+  const scol = k => COLUMNS.find(c => c.key === k);
+  const XCOLS = [
+    { key: 'no', label: 'お客様番号', w: 12, kind: 'text', per: 'person', get: scol('no').get },
+    { key: 'kname', label: 'お客様名', w: 20, kind: 'text', per: 'person', get: scol('kname').get },
+    { key: 'name', label: '利用者名', w: 18, kind: 'text', per: 'person', get: scol('name').get },
+    { key: 'item', label: '商品名', w: 42, kind: 'text', per: 'detail', get: (v, d) => d.name },
+    { key: 'ramt', label: 'スマートれん太', w: 15, kind: 'num', per: 'detail', sum: 'r', get: (v, d) => d.r ? d.r.amount : '' },
+    { key: 'rtax', label: '税区分', w: 8, kind: 'tax', per: 'detail', get: (v, d) => d.r ? taxLabel(d.r) : '' },
+    { key: 'pamt', label: '卸元の請求', w: 13, kind: 'num', per: 'detail', sum: 'p', get: (v, d) => d.p ? d.p.amount : '' },
+    { key: 'ptax', label: '税区分', w: 8, kind: 'tax', per: 'detail', get: (v, d) => d.p ? taxLabel(d.p) : '' },
+    { key: 'ddiff', label: '差額', w: 11, kind: 'diff', per: 'detail', sum: 'd', get: (v, d) => (d.r ? d.r.amount : 0) - (d.p ? d.p.amount : 0) },
+    { key: 'kind', label: '不一致の内容', w: 20, kind: 'text', per: 'detail', get: (v, d) => d.kind },
+    { key: 'flags', label: '注記', w: 26, kind: 'text', per: 'flags' },
+    { key: 'names', label: '両側の表記', w: 30, kind: 'text', per: 'person', get: scol('names').get }
+  ];
+  const XNOTE = '表の金額は明細ごと（税抜）。差額は スマートれん太 − 卸元の請求。税区分が違う明細は、税区分を赤字にしている。';
 
   // ---------- Excel 出力 ----------
   const RISKY = /^[=+\-@\t\r]/;
@@ -817,16 +847,17 @@
       warn: { font: { bold: true, size: 10, color: 'B42318' }, fill: 'FEF3F2' },
       head: { font: { bold: true, size: 10, color: 'FFFFFF' }, fill: '4F46E5', border: '4F46E5', align: { h: 'center', wrap: true } }
     };
-    const bodyStyle = (kind, zebra) => {
+    const bodyStyle = (kind, zebra, taxMis) => {
       const st = { font: { size: 10 }, border: LINE, align: { v: 'top', wrap: true } };
       if (zebra) st.fill = 'F7F8FB';
+      if (kind === 'tax') { st.align = { v: 'top', h: 'center' }; if (taxMis) st.font = { size: 10, bold: true, color: 'B42318' }; }
       if (kind === 'num') { st.numFmt = '#,##0'; st.align = { v: 'top', h: 'right' }; }
       if (kind === 'diff') { st.numFmt = '+#,##0;[Red]-#,##0;0'; st.align = { v: 'top', h: 'right' }; st.font = { size: 10, bold: true }; }
       if (kind === 'count') st.align = { v: 'top', h: 'center' };
       return st;
     };
     const text = (v, style) => ({ v: safe(v), style });
-    const n = COLUMNS.length;
+    const n = XCOLS.length;
     const rows = [];
     const pad = cells => { while (cells.length < n) cells.push(null); return cells; };
 
@@ -835,12 +866,27 @@
     r1[n - 1] = text('作成 ' + stamp, ST.stamp);
     rows.push({ height: 26, cells: r1 });
 
-    // 2) 要点（人数と合計）
-    rows.push({ height: 17, cells: pad(['不一致の人数', '金額の違い', '課税区分だけの違い', 'スマートれん太 計', '卸元の請求 計', '差額 計'].map(x => text(x, ST.sumLabel))) });
-    rows.push({ height: 24, cells: pad([
-      text(list.length + '人', ST.sumText), text((list.length - taxOnly) + '人', ST.sumText), text(taxOnly + '人', ST.sumText),
-      { v: totalR, style: ST.sumNum }, { v: totalP, style: ST.sumNum }, { v: res.scopedDiff, style: ST.sumDiff }
-    ]) });
+    // 2) 要点（人数と合計）。人数は左の3列、合計はそれぞれの金額の列の上に置く
+    const merges = ['A1:' + X.colName(n - 2) + '1'];
+    const lab = pad([]), val = pad([]);
+    const labRow = rows.length + 1, valRow = labRow + 1;
+    const tile = (i, label, cell) => {
+      lab[i] = text(label, ST.sumLabel); val[i] = cell;
+      // 金額の右隣が税区分の列なら、合計はその2列をまたいで置く
+      if (XCOLS[i + 1] && XCOLS[i + 1].kind === 'tax') {
+        lab[i + 1] = text('', ST.sumLabel); val[i + 1] = { v: '', style: cell.style };
+        merges.push(X.colName(i) + labRow + ':' + X.colName(i + 1) + labRow, X.colName(i) + valRow + ':' + X.colName(i + 1) + valRow);
+      }
+    };
+    const sumAt = k => XCOLS.findIndex(c => c.sum === k);
+    tile(0, '不一致の人数', text(list.length + '人', ST.sumText));
+    tile(1, '金額の違い', text((list.length - taxOnly) + '人', ST.sumText));
+    tile(2, '課税区分だけの違い', text(taxOnly + '人', ST.sumText));
+    tile(sumAt('r'), 'スマートれん太 計', { v: totalR, style: ST.sumNum });
+    tile(sumAt('p'), '卸元の請求 計', { v: totalP, style: ST.sumNum });
+    tile(sumAt('d'), '差額 計', { v: res.scopedDiff, style: ST.sumDiff });
+    rows.push({ height: 17, cells: lab });
+    rows.push({ height: 24, cells: val });
 
     // 3) 異常があるときだけ注意を出す（何も無ければ出さない）
     const warns = [];
@@ -853,29 +899,26 @@
     if (u.taxUnknown) loose.push('課税区分を読めない人 ' + u.taxUnknown + '人');
     if (loose.length) warns.push(loose.join('、') + ' があります。この一覧に出ていない違いが残っているかもしれません');
     warns.forEach(w => rows.push({ height: 20, cells: pad([text('注意：' + w + '。', ST.warn)]).map(c => c || { v: '', style: ST.warn }) }));
-    rows.push({ height: 16, cells: pad([text('計は、この拠点で突合した全員（' + res.persons.length.toLocaleString() + '人）の税抜の合計。差額は スマートれん太 − 卸元の請求。' +
-      '「不一致の内容」の矢印は、スマートれん太 → 卸元 の向き。', ST.note)]) });
+    rows.push({ height: 16, cells: pad([text('計は、この拠点で突合した全員（' + res.persons.length.toLocaleString() + '人）の税抜の合計。' + XNOTE, ST.note)]) });
     rows.push({ height: 6, cells: [] });
 
     // 4) 表
     const headRow = rows.length + 1;
-    rows.push({ height: 22, cells: COLUMNS.map(c => text(c.label, ST.head)) });
-    // 明細1件を1行にする。人ごとの項目（番号・氏名・金額・件数）は最初の行にだけ出し、色は人ごとに変える。
+    rows.push({ height: 22, cells: XCOLS.map(c => text(c.label, ST.head)) });
+    // 明細1件を1行にする。人ごとの項目（番号・氏名など）は最初の行にだけ出し、色は人ごとに変える。
     // 注記は最初の行に全部出す。続きの行には、明細にかかわる「明細説明未確定」だけを繰り返す（長い注記を全行に並べない）
     const DETAIL_FLAG = '明細説明未確定';
     list.forEach((v, i) => {
-      const lines = detailLines(v);
+      const items = detailItems(v);
       const flags = ((v.flags || []).join(' ') + (v.note ? ' ' + v.note : '')).trim();
       const contFlags = (v.flags || []).includes(DETAIL_FLAG) ? DETAIL_FLAG : '';
-      (lines.length ? lines : ['']).forEach((line, k) => {
-        rows.push({ cells: COLUMNS.map(c => {
-          const style = bodyStyle(c.kind, i % 2 === 1);
-          if (c.key === 'detail') return text(line, style);
-          if (c.key === 'flags') return text(k > 0 ? contFlags : flags, style);
-          if (k > 0) return text('', style);
-          const val = c.get(v);
-          if (c.num && typeof val === 'number') return { v: val, style };
-          return text(val, style);
+      (items.length ? items : [null]).forEach((d, k) => {
+        rows.push({ cells: XCOLS.map(c => {
+          const style = bodyStyle(c.kind, i % 2 === 1, !!(d && d.taxMis));
+          if (c.per === 'flags') return text(k > 0 ? contFlags : flags, style);
+          if (c.per === 'person' ? k > 0 : !d) return text('', style);
+          const val = c.get(v, d);
+          return typeof val === 'number' ? { v: val, style } : text(val, style);
         }) });
       });
     });
@@ -906,9 +949,9 @@
 
     return {
       sheetName: '金額不一致一覧',
-      cols: COLUMNS.map(c => c.w),
+      cols: XCOLS.map(c => c.w),
       rows,
-      merges: ['A1:' + X.colName(n - 2) + '1'],
+      merges,
       freezeRow: headRow,
       titleRow: headRow,
       fileName: 'レンタル卸_金額不一致一覧_' + S.period.replace(/[^0-9年月]/g, '') + '_' +
