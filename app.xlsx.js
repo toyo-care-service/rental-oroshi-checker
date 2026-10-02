@@ -53,10 +53,12 @@
   // ---------- XML ----------
   // XML 1.0 で使えない制御文字は捨てる（入力ファイル由来の文字列に紛れていても、開けないファイルを作らない）
   const BAD_XML = /[^\x09\x0A\x0D\x20-\uD7FF\uE000-\uFFFD\u{10000}-\u{10FFFF}]/gu;
+  const clean = v => String(v == null ? '' : v).replace(BAD_XML, '');
   function esc(v) {
-    return String(v == null ? '' : v).replace(BAD_XML, '')
-      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    return clean(v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   }
+  // Excel の上限。超えるファイルは Excel で開けない・欠けるおそれがあるので、作らずに理由を付けて止める
+  const MAX_ROWS = 1048576, MAX_CELL_CHARS = 32767;
   function colName(i) {
     let s = '';
     for (let n = i + 1; n > 0; n = Math.floor((n - 1) / 26)) s = String.fromCharCode(65 + (n - 1) % 26) + s;
@@ -123,6 +125,9 @@
     const book = StyleBook(spec.fontName || '游ゴシック');
     const nCols = spec.cols.length;
     let sheetData = '';
+    if (spec.rows.length > MAX_ROWS) {
+      throw new Error('行数（' + spec.rows.length.toLocaleString() + '行）が、Excel の上限（' + MAX_ROWS.toLocaleString() + '行）を超えています');
+    }
     spec.rows.forEach((row, ri) => {
       const r = ri + 1;
       let cells = '';
@@ -131,7 +136,13 @@
         const ref = colName(ci) + r, s = book.id(c.style);
         if (typeof c.v === 'number' && isFinite(c.v)) cells += '<c r="' + ref + '" s="' + s + '"><v>' + c.v + '</v></c>';
         else if (c.v == null || c.v === '') cells += '<c r="' + ref + '" s="' + s + '"/>';
-        else cells += '<c r="' + ref + '" s="' + s + '" t="inlineStr"><is><t xml:space="preserve">' + esc(c.v) + '</t></is></c>';
+        else {
+          const len = clean(c.v).length;
+          if (len > MAX_CELL_CHARS) {
+            throw new Error('セル ' + ref + ' の文字数（' + len.toLocaleString() + '文字）が、Excel の上限（' + MAX_CELL_CHARS.toLocaleString() + '文字）を超えています');
+          }
+          cells += '<c r="' + ref + '" s="' + s + '" t="inlineStr"><is><t xml:space="preserve">' + esc(c.v) + '</t></is></c>';
+        }
       });
       sheetData += '<row r="' + r + '"' + (row.height ? ' ht="' + row.height + '" customHeight="1"' : '') + '>' + cells + '</row>';
     });

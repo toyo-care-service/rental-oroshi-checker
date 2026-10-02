@@ -83,7 +83,7 @@ function boot(preset) {
     written = { name, bytes, sheet: wb.SheetNames[0], rows: sb.XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' }) };
   };
   vm.runInContext(fs.readFileSync(__dirname + '/app.ui.js', 'utf8'), sb, { filename: 'app.ui.js' });
-  ui.$ = $; ui.written = () => written;
+  ui.$ = $; ui.written = () => written; ui.xlsx = sb.AppXlsx;
   return ui;
 }
 
@@ -225,6 +225,33 @@ const goodCfg = () => ({
     await u2.$('btnXlsx').click();
     const f2 = u2.written().rows.map(r => r.join('|'));
     ok(f2.slice(0, 6).some(x => /^注意：突合していない行 1行/.test(x)), '突合していない行があれば、題名の近くに注意を出す');
+  }
+
+  console.log('== Excel を作れないときは、ファイルを出さずに理由を出す ==');
+  {
+    const ui = boot(goodCfg());
+    const X = ui.xlsx;
+    const one = v => ({ sheetName: 's', cols: [10], rows: [{ cells: [{ v }] }] });
+    const thrown = f => { try { f(); return ''; } catch (e) { return e.message; } };
+    ok(thrown(() => X.build(one('あ'.repeat(32767)))) === '', '1セル 32,767文字までは書き出せる');
+    ok(/セル A1 の文字数（32,768文字）が、Excel の上限（32,767文字）/.test(thrown(() => X.build(one('あ'.repeat(32768))))), '1セルが 32,768文字なら、どのセルかを添えて止める');
+    ok(thrown(() => X.build(one('あ'.repeat(32767) + '\u0000\u0001'))) === '', '捨てる制御文字は文字数に数えない');
+    ok(/行数（1,048,577行）が、Excel の上限（1,048,576行）/.test(thrown(() => X.build({ sheetName: 's', cols: [10], rows: { length: 1048577, forEach() {} } }))), '行数が上限を超えたら止める');
+
+    await loadBoth(ui);
+    await runNow(ui);
+    const build = X.build;
+    X.build = () => { throw new Error('試験用の失敗'); };
+    await ui.$('btnXlsx').click();
+    ok(!ui.written() && /Excel を作れませんでした。ファイルは保存されていません。理由：試験用の失敗/.test(ui.$('xlsxMsg').textContent), '書き出しに失敗したら、保存せずに理由を画面に出す');
+    X.build = build;
+    await ui.$('btnXlsx').click();
+    ok(!!ui.written() && ui.$('xlsxMsg').textContent === '', 'もう一度押して成功したら、前の失敗の表示は消える');
+    X.build = () => { throw new Error('試験用の失敗'); };
+    await ui.$('btnXlsx').click();
+    await runNow(ui);
+    ok(ui.$('xlsxMsg').textContent === '', '突合し直したら、前の失敗の表示は消える');
+    X.build = build;
   }
 
   console.log('== 設定は拠点ごとに持ち、切り替えても互いに影響しない ==');

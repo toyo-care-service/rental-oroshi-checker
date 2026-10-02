@@ -638,6 +638,7 @@
   function renderResult() {
     const res = S.result, box = $('resultMsgs');
     clear(box);
+    clear($('xlsxMsg'));
 
     if (!res.checksum.applicable) {
       msg(box, 'warn', '金額を読み取れない行が ' + res.checksum.unknownCount +
@@ -916,8 +917,15 @@
   }
 
   function exportXlsx() {
-    const spec = buildSheet();
-    X.save(X.build(spec), spec.fileName);
+    const box = $('xlsxMsg');
+    clear(box);
+    // 失敗したら、ボタンが無反応に見えないよう理由を出す
+    try {
+      const spec = buildSheet();
+      X.save(X.build(spec), spec.fileName);
+    } catch (e) {
+      msg(box, 'warn', 'Excel を作れませんでした。ファイルは保存されていません。理由：' + (e && e.message ? e.message : String(e)));
+    }
   }
 
   // ---------- 起動 ----------
