@@ -230,7 +230,6 @@ const goodCfg = () => ({
     await loadBoth(u4, RENTA, P(split));
     await runNow(u4);
     await u4.$('btnXlsx').click();
-    const f4 = u4.written().rows.map(r => r.join('|'));
     ok(resultNames(u4).join() === '試験一号', '人ごとの合計が合う人は、明細が分かれていても一覧に載せない');
     const r4 = u4.written().rows.map(r => r[0]);
     const k4 = r4.findIndex(x => /明細の対応がつかない 1人（うち、この一覧に 0人）/.test(x));
