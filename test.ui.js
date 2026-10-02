@@ -36,6 +36,7 @@ class El {
   fire(t) { return Promise.all((this.listeners[t] || []).map(f => f({ preventDefault() {}, dataTransfer: { files: [] } }))); }
   click() {
     if (this.type === 'checkbox') { this.checked = !this.checked; this.fire('click'); return this.fire('change'); }
+    if (this.type === 'radio') { this.checked = true; this.fire('click'); return this.fire('change'); }
     return this.fire('click');
   }
   querySelector(sel) { return (this.sub[sel] = this.sub[sel] || new El(sel)); }
@@ -51,8 +52,9 @@ function boot(preset) {
   const store = new Map();
   if (preset !== undefined) store.set('oroshi-checker/v1', typeof preset === 'string' ? preset : JSON.stringify(preset));
   const alerts = [];
+  const ui = { store, alerts, confirms: [], confirmAnswer: true };
   const sb = {
-    console, performance, TextDecoder, Intl, setTimeout,
+    console, performance, TextDecoder, TextEncoder, Intl, setTimeout,
     document: {
       getElementById: id => { if (!byId.has(id)) byId.set(id, new El('x', id)); return byId.get(id); },
       createElement: tag => new El(tag),
@@ -61,7 +63,7 @@ function boot(preset) {
     localStorage: { getItem: k => (store.has(k) ? store.get(k) : null), setItem: (k, v) => store.set(k, String(v)), removeItem: k => store.delete(k) },
     Image: class { addEventListener() {} set src(v) {} },
     alert: m => alerts.push(String(m)),
-    confirm: () => true
+    confirm: m => { ui.confirms.push(String(m)); return ui.confirmAnswer; }
   };
   sb.window = sb;
   vm.createContext(sb);
@@ -70,16 +72,19 @@ function boot(preset) {
   $('chkSave').checked = true;
   $('chkOneSide').checked = true;
   $('threshold').value = '0';
-  for (const f of ['vendor/xlsx.mini.min.js', 'app.core.js', 'app.match.js']) {
+  for (const f of ['vendor/xlsx.mini.min.js', 'app.core.js', 'app.match.js', 'app.xlsx.js']) {
     vm.runInContext(fs.readFileSync(__dirname + '/' + f, 'utf8'), sb, { filename: f });
   }
+  // 保存の代わりに、書き出されたファイルを SheetJS で読み戻す（他の実装で開ける形になっているかの確認を兼ねる）
   let written = null;
-  sb.XLSX.writeFile = (wb, name) => {
+  sb.AppXlsx.save = (bytes, name) => {
+    const wb = sb.XLSX.read(bytes, { type: 'array' });
     const ws = wb.Sheets[wb.SheetNames[0]];
-    written = { name, rows: sb.XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' }) };
+    written = { name, bytes, sheet: wb.SheetNames[0], rows: sb.XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' }) };
   };
   vm.runInContext(fs.readFileSync(__dirname + '/app.ui.js', 'utf8'), sb, { filename: 'app.ui.js' });
-  return { $, store, alerts, written: () => written };
+  ui.$ = $; ui.written = () => written;
+  return ui;
 }
 
 const wait = ms => new Promise(r => setTimeout(r, ms));
@@ -92,12 +97,24 @@ async function pick(ui, inputId, name, text, delay) {
   ui.$(inputId).fire('change');
   await wait((delay || 0) + 30);
 }
+async function loadBoth(ui, renta, para) {
+  await pick(ui, 'filePara', 'para.csv', para === undefined ? PARA : para);
+  await pick(ui, 'fileRenta', 'renta.xls', renta === undefined ? RENTA : renta);
+}
 const hidden = (ui, id) => ui.$(id).classList.contains('hidden');
 const heads = ui => ui.$('mapTable').querySelector('thead').children[0].children.map(c => c.textContent);
-const rowOf = (ui, b, c) => ui.$('mapTable').querySelector('tbody').children.find(tr => tr.children[0].textContent === b && tr.children[1].textContent === c);
+const mapRows = ui => ui.$('mapTable').querySelector('tbody').children;
+const rowOf = (ui, b, c) => mapRows(ui).find(tr => tr.children[0].textContent === b && tr.children[1].textContent === c);
 const cellOf = (ui, tr, name) => tr.children[heads(ui).indexOf(name)].children[0];
-const ignoreRow = ui => ui.$('mapTable').querySelector('tbody').children[0];
-const ignoreCell = (ui, name) => ignoreRow(ui).children[heads(ui).indexOf(name) - 4].children[0];
+const ignoreCell = (ui, name) => mapRows(ui)[0].children[heads(ui).indexOf(name) - 4].children[0];
+const bumonRadio = (ui, name) => { const l = ui.$('bumonPick').children.find(x => x.children[1].textContent.indexOf(name) === 0); return l && l.children[0]; };
+const chooseBumon = (ui, name) => bumonRadio(ui, name).click();
+const resultNames = ui => ui.$('resultTable').querySelector('tbody').children.map(tr => tr.children[2].textContent.replace(/[\s　]/g, ''));
+const saved = ui => JSON.parse(ui.store.get('oroshi-checker/v1'));
+async function runNow(ui) {
+  if (!ui.$('chkPeriod').checked) await ui.$('chkPeriod').click();
+  await ui.$('btnRun').click();
+}
 
 // ==================== 合成データ（test.js と同じ形） ====================
 const RH = ['年度', '部門コード', '部門名', '仕入先コード', '仕入先名', 'お客様番号', 'お客様名', 'お客様名ｶﾅ',
@@ -113,34 +130,198 @@ const P = (rows, header) => {
   return [h.map(qq).join(',')].concat(rows.map(o => h.map(k => qq(o[k])).join(','))).join('\r\n');
 };
 
+// X部門: 仕入先900（Z営業所と組む。2人）と仕入先905（別の卸元。請求データには出てこない）
+// V部門: 仕入先901（W営業所と組む。1人）
 const base = { 年度: '2026年8月', 部門コード: '1', 部門名: 'X部門', 仕入先コード: '900', 仕入先名: 'Y卸元', 決定卸先消費税区分: '外税' };
 const rentaRows = [
   Object.assign({}, base, { お客様番号: '1001', 利用者名: '試験 一号', 利用者名ｶﾅ: 'ｼｹﾝ ｲﾁｺﾞｳ', 商品: 'R01', 商品名: '手すり AAA-1000', '決定借受料(税抜)': '4,000' }),
   Object.assign({}, base, { お客様番号: '1002', 利用者名: '試験 二号', 利用者名ｶﾅ: 'ｼｹﾝ ﾆｺﾞｳ', 商品: 'R02', 商品名: '歩行車 BBB-2000', '決定借受料(税抜)': '2,000' }),
-  Object.assign({}, base, { 部門名: 'V部門', 仕入先コード: '901', お客様番号: '2001', 利用者名: '試験 三号', 利用者名ｶﾅ: 'ｼｹﾝ ｻﾝｺﾞｳ', 商品: 'R03', 商品名: 'ベッド CCC-3000', '決定借受料(税抜)': '9,000' })
+  Object.assign({}, base, { 仕入先コード: '905', 仕入先名: 'Q卸元', お客様番号: '1004', 利用者名: '試験 四号', 利用者名ｶﾅ: 'ｼｹﾝ ﾖﾝｺﾞｳ', 商品: 'R04', 商品名: '車いす DDD-4000', '決定借受料(税抜)': '5,000' }),
+  Object.assign({}, base, { 部門名: 'V部門', 仕入先コード: '901', お客様番号: '2001', 利用者名: '試験 三号', 利用者名ｶﾅ: 'ｼｹﾝ ｻﾝｺﾞｳ', 商品: 'R03', 商品名: 'ベッド CCC-3000', '決定借受料(税抜)': '9,000', 決定卸先消費税区分: '非課税' })
 ];
 const paraRows = [
   { 利用者コード: 'A01', 利用者名: '試験　一号', 利用者カナ: 'シケン　イチゴウ', 拠点: 'Z営業所', 商品名: '手すり  AAA-1000', 型式: 'AAA-1000', 金額: '3,000', 税: '10%' },
   { 利用者コード: 'A02', 利用者名: '試験　二号', 利用者カナ: 'シケン　ニゴウ', 拠点: 'Z営業所', 商品名: '歩行車  BBB-2000', 型式: 'BBB-2000', 金額: '2,000', 税: '10%' },
-  { 利用者コード: 'A03', 利用者名: '試験　三号', 利用者カナ: 'シケン　サンゴウ', 拠点: 'W営業所', 商品名: 'ベッド  CCC-3000', 型式: 'CCC-3000', 金額: '9,000', 税: '非' }
+  { 利用者コード: 'A03', 利用者名: '試験　三号', 利用者カナ: 'シケン　サンゴウ', 拠点: 'W営業所', 商品名: 'ベッド  CCC-3000', 型式: 'CCC-3000', 金額: '9,500', 税: '非' }
 ];
 const RENTA = R(rentaRows);
+const RENTA_X_ONLY = R(rentaRows.filter(r => r.部門名 === 'X部門'));
 const RENTA_2MONTHS = R(rentaRows.concat([Object.assign({}, rentaRows[0], { 年度: '2026年7月' })]));
 const RENTA_OTHER = R(rentaRows.map(r => Object.assign({}, r, { 年度: '2026年9月' })));
 const PARA = P(paraRows);
+const PARA_W_ONLY = P(paraRows.filter(r => r.拠点 === 'W営業所'));
 const PARA_NO_TAX = P(paraRows, PH.filter(h => h !== '税'));
 
-/** アプリ自身が書き出す形の設定 */
+/** アプリ自身が書き出す形の設定（X部門を選び、仕入先900をZ営業所と組み、仕入先905とW営業所は対象外） */
 const goodCfg = () => ({
-  version: 1, savedAt: '2026-09-29T00:00:00.000Z',
+  version: 1, savedAt: '2026-09-29T00:00:00.000Z', bumon: 'X部門',
   mappings: [
     { bumon: 'X部門', shiireCd: '900', kyoten: ['Z営業所'], ignore: false },
-    { bumon: 'V部門', shiireCd: '901', kyoten: [], ignore: true }
+    { bumon: 'X部門', shiireCd: '905', kyoten: [], ignore: true }
   ],
-  ignoreKyoten: ['W営業所'], confirmed: [], exclPara: [], exclRenta: [], threshold: 0, showOneSide: true
+  ignoreKyotenByBumon: { 'X部門': ['W営業所'] }, confirmed: [], exclPara: [], exclRenta: [], threshold: 0, showOneSide: true
 });
 
 (async () => {
+  console.log('== 拠点を選んで、その拠点の分だけを突合する ==');
+  {
+    const ui = boot();
+    await loadBoth(ui);
+    ok(/拠点の選択/.test(ui.$('runHint').textContent) && ui.$('btnRun').disabled, '拠点を選ぶまでは突合できず、理由が出る');
+    ok(mapRows(ui).length === 0 && /拠点を選んでください/.test(ui.$('mapMsg').textContent), '拠点を選ぶまで対応表は出ない');
+    ok(ui.$('bumonPick').children.length === 2, '支払予定表にある拠点（部門）が選択肢に並ぶ');
+    await chooseBumon(ui, 'X部門');
+    ok(!!rowOf(ui, 'X部門', '900') && !!rowOf(ui, 'X部門', '905') && !rowOf(ui, 'V部門', '901'), '対応表には、選んだ拠点の仕入先だけが並ぶ');
+    await ui.$('btnSuggest').click();
+    ok(cellOf(ui, rowOf(ui, 'X部門', '900'), 'Z営業所').checked, '候補：利用者が重なる卸元の拠点と組む');
+    ok(cellOf(ui, rowOf(ui, 'X部門', '905'), '対象外').checked, '候補：請求データに出てこない仕入先は対象外');
+    ok(ignoreCell(ui, 'W営業所').checked, '候補：ほかの拠点（部門）と重なる卸元の拠点は、この拠点では対象外');
+    ok(/全拠点が、いずれかの組に割り当てられているか、対象外/.test(ui.$('mapMsg').textContent), '設定の漏れが無いことが分かる');
+    await runNow(ui);
+    ok(!hidden(ui, 'cardResult') && /X部門/.test(ui.$('kpi').textContent), '結果に、どの拠点の分かが出る');
+    ok(resultNames(ui).join() === '試験一号', '一覧には選んだ拠点の人だけが出る（ほかの拠点の人は混ざらない）');
+    ok(!/範囲外/.test(ui.$('resultMsgs').textContent), 'ほかの拠点の行は対象外として扱い、判定不能には数えない');
+    await ui.$('btnXlsx').click();
+    const w = ui.written();
+    ok(w && /_X部門\.xlsx$/.test(w.name), '出力のファイル名に拠点が入る');
+    ok(w && /2026年8月/.test(w.rows[0][0]) && /X部門/.test(w.rows[0][0]), '出力の題名に年月と拠点が入る');
+  }
+
+  console.log('== 出力は、要点・書式つきの表・条件の順に並ぶ ==');
+  {
+    // 一号は、金額の違いに加えて、卸元にしか無い明細も持つ（不一致の内容が2行になる）。
+    // 卸元の利用者コードを分けてあるので、人にかかわる長い注記（合算）も付く
+    const extra = paraRows.concat([{ 利用者コード: 'A09', 利用者名: '試験　一号', 利用者カナ: 'シケン　イチゴウ', 拠点: 'Z営業所', 商品名: 'テーブル  EEE-5000', 型式: 'EEE-5000', 金額: '700', 税: '10%' }]);
+    const ui = boot(goodCfg());
+    await loadBoth(ui, RENTA, P(extra));
+    await runNow(ui);
+    await ui.$('btnXlsx').click();
+    const w = ui.written();
+    const flat = w.rows.map(r => r.join('|'));
+    ok(w.sheet === '金額不一致一覧' && w.rows.length > 0, '書き出したファイルを、別の実装（SheetJS）で読み戻せる');
+    const sumAt = w.rows.findIndex(r => r[0] === '不一致の人数');
+    ok(sumAt === 1 && w.rows[2][0] === '1人' && w.rows[2][3] === 6000 && w.rows[2][4] === 5700 && w.rows[2][5] === 300, '題名のすぐ下に、人数と合計（スマートれん太・卸元・差額）が数値で出る');
+    const headAt = w.rows.findIndex(r => r[0] === 'お客様番号');
+    ok(headAt > 2 && w.rows[headAt].join('|') === 'お客様番号|お客様名|利用者名|スマートれん太|卸元の請求|差額|件数|不一致の内容|注記|両側の表記', '表の見出しが並ぶ');
+    const row = w.rows[headAt + 1];
+    ok(row[2].replace(/[\s　]/g, '') === '試験一号' && row[3] === 4000 && row[4] === 3700 && row[5] === 300, '表の金額は数値として入る（桁区切りや赤字は書式で付ける）');
+    const row2 = w.rows[headAt + 2] || [];
+    ok(/円 → /.test(row[7]) && !/\n|\\n|BS/.test(row[7]) && /EEE-5000：れん太に無し/.test(row2[7]), '不一致の内容は、明細1件を1行にして入る');
+    ok(row[6] === 2 && [0, 1, 2, 3, 4, 5, 6, 9].every(i => row2[i] === '' || row2[i] == null), '同じ人の2行目からは、番号・氏名・金額・件数を空にする');
+    ok(/合算/.test(row[8]) && /明細説明未確定/.test(row[8]) && row2[8] === '明細説明未確定', '注記は最初の行に全部出し、続きの行には「明細説明未確定」だけを繰り返す');
+    ok((w.rows[headAt + 3] || []).join('') === '', '表の行数は、不一致の明細の数と同じ');
+    ok(!flat.slice(0, headAt).some(x => /^注意：/.test(x)), '異常が無ければ、注意は出さない');
+    ok(flat.some(x => /^この一覧の条件/.test(x)) && flat.some(x => /^入力ファイル：/.test(x)) && flat.findIndex(x => /^入力ファイル：/.test(x)) > headAt + 1, '細かい条件は表の下にまとめる');
+    const raw = Buffer.from(w.bytes).toString('latin1');
+    ok(/xl\/styles\.xml/.test(raw) && /4F46E5/.test(raw) && /wrapText="1"/.test(raw) && /\[Red\]/.test(raw), '見出しの色・折り返し・マイナスの赤字の書式が入っている');
+    ok(/<pane ySplit="/.test(raw) && /orientation="landscape"/.test(raw) && /_xlnm.Print_Titles/.test(raw), '見出しの固定・横向き印刷・印刷時の見出しの繰り返しが入っている');
+    ok(!/<autoFilter/.test(raw), '絞り込み（並べ替え）は付けない。並べ替えると、続きの行が誰の明細か分からなくなる');
+
+    // 突合していない行が残るときは、上に注意を出す
+    const c = goodCfg(); c.mappings[1] = { bumon: 'X部門', shiireCd: '905', kyoten: ['K営業所'], ignore: false };
+    const u2 = boot(c);
+    await loadBoth(u2);
+    await runNow(u2);
+    await u2.$('btnXlsx').click();
+    const f2 = u2.written().rows.map(r => r.join('|'));
+    ok(f2.slice(0, 6).some(x => /^注意：突合していない行 1行/.test(x)), '突合していない行があれば、題名の近くに注意を出す');
+  }
+
+  console.log('== 設定は拠点ごとに持ち、切り替えても互いに影響しない ==');
+  {
+    const ui = boot();
+    await loadBoth(ui);
+    await chooseBumon(ui, 'X部門');
+    await ui.$('btnSuggest').click();
+    await chooseBumon(ui, 'V部門');
+    ok(!!rowOf(ui, 'V部門', '901') && !rowOf(ui, 'X部門', '900'), '拠点を切り替えると、対応表もその拠点のものになる');
+    await ui.$('btnSuggest').click();
+    ok(cellOf(ui, rowOf(ui, 'V部門', '901'), 'W営業所').checked && ignoreCell(ui, 'Z営業所').checked, 'V部門では W営業所と組み、Z営業所は対象外');
+    await runNow(ui);
+    ok(resultNames(ui).join() === '試験三号', 'V部門の結果には V部門の人だけが出る');
+    await chooseBumon(ui, 'X部門');
+    ok(hidden(ui, 'cardResult'), '拠点を切り替えると、前の拠点の結果は隠れる');
+    ok(cellOf(ui, rowOf(ui, 'X部門', '900'), 'Z営業所').checked && ignoreCell(ui, 'W営業所').checked, 'X部門に戻すと、X部門の設定がそのまま残っている');
+    await ignoreCell(ui, 'W営業所').click();
+    await ignoreCell(ui, 'W営業所').click();
+    const c = saved(ui);
+    ok(c.mappings.find(m => m.bumon === 'V部門').kyoten.join() === 'W営業所', 'X部門で W営業所を対象外にしても、V部門の組み合わせは消えない');
+    ok(c.ignoreKyotenByBumon['X部門'].join() === 'W営業所' && c.ignoreKyotenByBumon['V部門'].join() === 'Z営業所', '対象外の拠点は、拠点ごとに保存される');
+    await ui.$('btnMapClear').click();
+    ok(!saved(ui).mappings.some(m => m.bumon === 'X部門') && saved(ui).mappings.some(m => m.bumon === 'V部門'), '「この拠点の設定を空にする」は、選んでいる拠点の設定だけを消す');
+
+    const again = boot(ui.store.get('oroshi-checker/v1'));
+    await loadBoth(again);
+    ok(bumonRadio(again, 'X部門').checked, '前回選んだ拠点が、次に開いたときも選ばれている');
+  }
+
+  console.log('== 拠点の取り違えに気づける ==');
+  {
+    const ui = boot();
+    await loadBoth(ui, RENTA, PARA_W_ONLY);
+    await chooseBumon(ui, 'X部門');
+    ok(/別の拠点の請求データ/.test(ui.$('mapMsg').textContent), '選んだ拠点の利用者が請求データにいなければ、別の拠点のファイルを疑う警告を出す');
+    await chooseBumon(ui, 'V部門');
+    ok(!/別の拠点の請求データ/.test(ui.$('mapMsg').textContent), '利用者が重なる拠点を選べば警告は出ない');
+
+    const one = boot();
+    await loadBoth(one, RENTA_X_ONLY, PARA);
+    ok(bumonRadio(one, 'X部門').checked && !/拠点の選択/.test(one.$('runHint').textContent), '支払予定表に拠点が1つしか無ければ、その拠点が選ばれる');
+  }
+
+  console.log('== 残してある設定が、今月の結果に混ざらない ==');
+  {
+    // ほかの拠点（部門）が同じ卸元の拠点と組む設定、今月のファイルに無い組の設定が残っていても、結果は変わらない
+    const c = goodCfg();
+    c.mappings.push({ bumon: 'V部門', shiireCd: '901', kyoten: ['Z営業所'], ignore: false });
+    c.mappings.push({ bumon: 'X部門', shiireCd: '999', kyoten: ['Z営業所'], ignore: false });
+    const ui = boot(c);
+    await loadBoth(ui);
+    ok(!/同じ拠点が複数の組/.test(ui.$('mapMsg').textContent), '見えていない設定とは、拠点の重複として扱わない');
+    await runNow(ui);
+    ok(resultNames(ui).join() === '試験一号', '残してある設定があっても、選んだ拠点の人が正しい相手と結ばれる');
+    ok(/対象人数/.test(ui.$('kpi').textContent) && /2人/.test(ui.$('kpi').textContent), '対象は選んだ拠点の2人だけ');
+  }
+
+  console.log('== 今月のファイルに無い拠点とだけ組んでいる組は、警告して突合しない ==');
+  {
+    const c = goodCfg();
+    c.mappings[1] = { bumon: 'X部門', shiireCd: '905', kyoten: ['K営業所'], ignore: false };
+    const ui = boot(c);
+    await loadBoth(ui);
+    ok(/今月のファイルに無い拠点とだけ組んでいる組があります：X部門×905（1行 5,000円）/.test(ui.$('mapMsg').textContent), '組と行数・金額を挙げて警告する');
+    ok(/今月のファイルに無い拠点：K営業所/.test(rowOf(ui, 'X部門', '905').children[2].textContent), '組の行に、今月のファイルに無い拠点を添える');
+    await runNow(ui);
+    ok(resultNames(ui).join() === '試験一号', 'その組の人は一覧に出ない（卸元に無い、とは扱わない）');
+    ok(/範囲外 1行/.test(ui.$('resultMsgs').textContent), 'その組の行は、判定不能（範囲外）として数える');
+    ok(saved(ui).mappings.find(m => m.shiireCd === '905').kyoten.join() === 'K営業所', '設定は残る');
+    ui.confirmAnswer = false;
+    await cellOf(ui, rowOf(ui, 'X部門', '905'), '対象外').click();
+    ok(ui.confirms.length === 1 && /K営業所/.test(ui.confirms[0]), '見えていない拠点と組んだ組を対象外にするときは、確かめる');
+    ok(saved(ui).mappings.find(m => m.shiireCd === '905').kyoten.join() === 'K営業所', '取りやめれば、設定は変わらない');
+  }
+
+  console.log('== 行の無い月をまたいでも、対応表の設定は残る ==');
+  {
+    // 仕入先900は Z営業所と W2営業所（今月は行が無い）と組む。仕入先905は今月のファイルに行が無い
+    const c = goodCfg();
+    c.mappings[0].kyoten = ['Z営業所', 'W2営業所'];
+    const ui = boot(c);
+    const RENTA_NO_905 = R(rentaRows.filter(r => r.仕入先コード !== '905'));
+    await loadBoth(ui, RENTA_NO_905, PARA);
+    ok(/今月のファイルに無い組 1組・拠点 1件/.test(ui.$('mapMsg').textContent), '今月のファイルに無い組・拠点の設定を残していることを知らせる');
+    ok(/今月のファイルに無い拠点：W2営業所/.test(rowOf(ui, 'X部門', '900').children[2].textContent), '組の行に、今月のファイルに無い拠点を添える');
+    await runNow(ui);
+    await ui.$('btnSuggest').click();
+    const s = saved(ui);
+    ok(s.mappings.find(m => m.shiireCd === '905').ignore === true, '今月のファイルに無い組の設定は、突合しても「候補を出す」を押しても消えない');
+    ok(s.mappings.find(m => m.shiireCd === '900').kyoten.includes('W2営業所'), '今月のファイルに無い拠点も、組の設定から消えない');
+    const back = boot(JSON.stringify(s));
+    await loadBoth(back);
+    ok(cellOf(back, rowOf(back, 'X部門', '905'), '対象外').checked, '行が戻ってきた月は、前の設定のまま');
+    ok(!/割り当てられていない拠点|指定していない組/.test(back.$('mapMsg').textContent), '設定し直しを求める警告は出ない');
+  }
+
   console.log('== 読み込みに失敗したら、前のファイルの表示も消す ==');
   {
     const ui = boot();
@@ -179,6 +360,9 @@ const goodCfg = () => ({
       ['拠点に空文字', c => { c.mappings[0].kyoten = ['']; }],
       ['突合する組なのに拠点が空', c => { c.mappings[0].kyoten = []; }],
       ['対象外の組に拠点', c => { c.mappings[1].kyoten = ['W営業所']; }],
+      ['選んだ拠点が数値', c => { c.bumon = 5; }],
+      ['拠点ごとの対象外が配列', c => { c.ignoreKyotenByBumon = ['W営業所']; }],
+      ['拠点ごとの対象外の中身が文字列でない', c => { c.ignoreKyotenByBumon = { 'X部門': [1] }; }],
       ['表示の切替が文字列', c => { c.showOneSide = 'yes'; }],
       ['確認済みの日時が数値', c => { c.confirmed = [{ paraKey: 'C\tA01', rentaKey: '1001\t試験一号', at: 5 }]; }],
       ['除外条件に null', c => { c.exclPara = [null]; }]
@@ -189,35 +373,32 @@ const goodCfg = () => ({
       try { ui = boot(c); } catch (e) { crashed = true; }
       ok(!crashed && ui.alerts.length === 1, label + ' → 起動は止まらず、使えない設定として知らせる');
     }
-    const ui = boot(goodCfg());
-    ok(ui.alerts.length === 0, 'アプリが書き出す形の設定はそのまま使える');
+    ok(boot(goodCfg()).alerts.length === 0, 'アプリが書き出す形の設定はそのまま使える');
+    const old = goodCfg(); delete old.bumon; delete old.ignoreKyotenByBumon; old.ignoreKyoten = ['W営業所'];
+    ok(boot(old).alerts.length === 0, '拠点を選ぶ前の版が保存した設定も読める（拠点は選び直す）');
 
     // 画面で操作して保存された設定を、次に開いたときに読み込めること
     const u2 = boot();
-    await pick(u2, 'filePara', 'para.csv', PARA);
-    await pick(u2, 'fileRenta', 'renta.xls', RENTA);
+    await loadBoth(u2);
+    await chooseBumon(u2, 'X部門');
     await u2.$('btnSuggest').click();
-    await cellOf(u2, rowOf(u2, 'V部門', '901'), '対象外').click();
     await u2.$('btnExclCheap').click();
-    const saved = u2.store.get('oroshi-checker/v1');
-    const u3 = boot(saved);
-    ok(u3.alerts.length === 0, '画面で操作して保存された設定は、次に開いたときにそのまま使える');
+    ok(boot(u2.store.get('oroshi-checker/v1')).alerts.length === 0, '画面で操作して保存された設定は、次に開いたときにそのまま使える');
   }
 
-  console.log('== 設定ファイルを読み込んだら、今のファイルに合わせて整え直す ==');
+  console.log('== 設定ファイルを読み込んだら、今のファイルで対応表を描き直す ==');
   {
     const ui = boot();
-    await pick(ui, 'filePara', 'para.csv', PARA);
-    await pick(ui, 'fileRenta', 'renta.xls', RENTA);
+    await loadBoth(ui);
     const c = goodCfg();
-    c.mappings.push({ bumon: 'Q部門', shiireCd: '999', kyoten: ['Z営業所'], ignore: false });
-    c.mappings[0].kyoten = ['Z営業所'];
-    c.mappings[2].kyoten = ['K営業所'];
+    c.mappings.push({ bumon: 'X部門', shiireCd: '999', kyoten: ['K営業所'], ignore: false });
     ui.$('fileCfg').value = 'cfg.json';
     ui.$('fileCfg').files = [{ text: async () => JSON.stringify(c) }];
     await ui.$('fileCfg').fire('change');
     ok(ui.alerts.length === 0, '（前提）設定ファイルは使える形');
-    ok(/今回のファイルに無い組/.test(ui.$('mapMsg').textContent), 'ファイルに無い組は落とし、その旨を出す');
+    ok(bumonRadio(ui, 'X部門').checked && cellOf(ui, rowOf(ui, 'X部門', '900'), 'Z営業所').checked, '設定ファイルの拠点と対応表が画面に出る');
+    ok(/今月のファイルに無い組 1組/.test(ui.$('mapMsg').textContent), 'ファイルに無い組は、設定を残したうえでその旨を出す');
+    ok(saved(ui).mappings.some(m => m.shiireCd === '999'), '今月のファイルに無い組も、保存される設定に残る');
     ok(ui.$('fileCfg').value === '', '同じ設定ファイルを選び直せるよう、選択を空に戻す');
     const bad = goodCfg(); bad.mappings[0].ignore = 'no';
     ui.$('fileCfg').value = 'bad.json';
@@ -228,10 +409,9 @@ const goodCfg = () => ({
 
   console.log('== 割り当てと対象外が重なった設定は、割り当てを優先して表示する ==');
   {
-    const c = goodCfg(); c.ignoreKyoten = ['W営業所', 'Z営業所'];
+    const c = goodCfg(); c.ignoreKyotenByBumon['X部門'] = ['W営業所', 'Z営業所'];
     const ui = boot(c);
-    await pick(ui, 'filePara', 'para.csv', PARA);
-    await pick(ui, 'fileRenta', 'renta.xls', RENTA);
+    await loadBoth(ui);
     ok(ignoreCell(ui, 'Z営業所').checked === false, '割り当て済みの拠点は、対象外のチェックが外れる');
     ok(ignoreCell(ui, 'W営業所').checked === true, '割り当てていない拠点は対象外のまま');
   }
@@ -239,14 +419,12 @@ const goodCfg = () => ({
   console.log('== 設定を変えたら、前の結果は使わせない ==');
   {
     const ui = boot(goodCfg());
-    await pick(ui, 'filePara', 'para.csv', PARA);
-    await pick(ui, 'fileRenta', 'renta.xls', RENTA);
-    await ui.$('chkPeriod').click();
-    await ui.$('btnRun').click();
+    await loadBoth(ui);
+    await runNow(ui);
     ok(!hidden(ui, 'cardResult'), '（前提）突合すると結果が出る');
     await ui.$('btnXlsx').click();
     const w = ui.written();
-    ok(w && w.rows.some(r => /対象外にした卸元の拠点：W営業所/.test(r[0])), '出力の見出しに、対象外にした拠点が出る');
+    ok(w && w.rows.some(r => /対象外にした卸元の拠点（W営業所）/.test(r[0])), '出力の「この一覧の条件」に、対象外にした拠点が出る');
     await ignoreCell(ui, 'W営業所').click();
     ok(hidden(ui, 'cardResult'), '対象外の指定を変えると、前の結果は隠れる');
     await ui.$('btnRun').click();
@@ -268,10 +446,8 @@ const goodCfg = () => ({
   console.log('== 選び直した瞬間に前の結果を隠し、読み終わるまで突合させない ==');
   {
     const ui = boot(goodCfg());
-    await pick(ui, 'filePara', 'para.csv', PARA);
-    await pick(ui, 'fileRenta', 'renta.xls', RENTA);
-    await ui.$('chkPeriod').click();
-    await ui.$('btnRun').click();
+    await loadBoth(ui);
+    await runNow(ui);
     ok(!hidden(ui, 'cardResult'), '（前提）突合すると結果が出る');
     const done = pick(ui, 'filePara', 'para_next.csv', PARA, 60);
     ok(hidden(ui, 'cardResult'), 'ファイルを選んだ瞬間に前の結果が隠れる（読み込み中に前の結果を出力できない）');
@@ -297,8 +473,7 @@ const goodCfg = () => ({
   console.log('== 設定ファイルを続けて選んだら、最後に選んだ方を使う ==');
   {
     const ui = boot();
-    await pick(ui, 'filePara', 'para.csv', PARA);
-    await pick(ui, 'fileRenta', 'renta.xls', RENTA);
+    await loadBoth(ui);
     const first = goodCfg(); first.threshold = 5;
     const last = goodCfg(); last.threshold = 9;
     ui.$('fileCfg').files = [{ text: () => wait(60).then(() => JSON.stringify(first)) }];
@@ -326,23 +501,6 @@ const goodCfg = () => ({
     ui.$('fileCfg').fire('change');
     await wait(120);
     ok(ui.alerts.length === 2, '両方読めなければ、警告は最後に選んだ方の1回だけ');
-  }
-
-  console.log('== 設定ファイルを読み込んだら、整え直してから保存する ==');
-  {
-    const ui = boot();
-    await pick(ui, 'filePara', 'para.csv', PARA);
-    await pick(ui, 'fileRenta', 'renta.xls', RENTA);
-    const c = goodCfg();
-    c.mappings.push({ bumon: 'Q部門', shiireCd: '999', kyoten: ['Z営業所'], ignore: false });
-    ui.$('fileCfg').files = [{ text: async () => JSON.stringify(c) }];
-    await ui.$('fileCfg').fire('change');
-    const saved = JSON.parse(ui.store.get('oroshi-checker/v1'));
-    ok(!saved.mappings.some(m => m.bumon === 'Q部門'), '今のファイルに無い組は、保存される設定にも残らない');
-    const again = boot(JSON.stringify(saved));
-    await pick(again, 'filePara', 'para.csv', PARA);
-    await pick(again, 'fileRenta', 'renta.xls', RENTA);
-    ok(!/今回のファイルに無い組/.test(again.$('mapMsg').textContent), '次に開いたとき、同じ注意が繰り返し出ない');
   }
 
   console.log('\n' + (fail ? '!! ' + fail + ' 件失敗' : '全項目 OK'));

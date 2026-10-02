@@ -3,13 +3,13 @@
    描画は textContent のみ。入力ファイルは社外由来のため innerHTML を使わない。 */
 
 (function () {
-  const C = window.AppCore, M = window.AppMatch;
+  const C = window.AppCore, M = window.AppMatch, X = window.AppXlsx;
   const $ = id => document.getElementById(id);
   const STORE_KEY = 'oroshi-checker/v1';
 
   const S = {
     renta: null, para: null, rentaName: '', paraName: '',
-    period: '', suggest: null, mappings: [], ignoreKyoten: [], confirmed: [], dupKyoten: [],
+    period: '', suggest: null, bumon: null, mappings: [], ignoreKyoten: [], ignoreByBumon: {}, confirmed: [], dupKyoten: [],
     exclPara: [], exclRenta: [], result: null
   };
 
@@ -32,9 +32,11 @@
   // ---------- 設定の保存（設計書 11） ----------
   const CFG_VERSION = 1;
   function cfgObject() {
+    // 対象外にした卸元の拠点は、拠点（部門）ごとに持つ。同じ卸元の拠点でも、選ぶ拠点によって突合する・しないが変わるため
+    if (S.bumon != null) S.ignoreByBumon[S.bumon] = S.ignoreKyoten;
     return {
       version: CFG_VERSION, savedAt: new Date().toISOString(),
-      mappings: S.mappings, ignoreKyoten: S.ignoreKyoten, confirmed: S.confirmed,
+      bumon: S.bumon, mappings: S.mappings, ignoreKyotenByBumon: S.ignoreByBumon, confirmed: S.confirmed,
       exclPara: S.exclPara, exclRenta: S.exclRenta,
       threshold: Number($('threshold').value) || 0,
       showOneSide: $('chkOneSide').checked
@@ -57,6 +59,14 @@
       if (!m.ignore && !m.kyoten.length) return '突合する拠点が指定されていない組があります';
     }
     if (!(o.ignoreKyoten || []).every(isStr)) return '対象外の拠点が正しくありません';
+    if (o.bumon != null && typeof o.bumon !== 'string') return '拠点の指定が正しくありません';
+    if (o.ignoreKyotenByBumon != null) {
+      if (!isObj(o.ignoreKyotenByBumon)) return '対象外の拠点が正しくありません';
+      for (const b of Object.keys(o.ignoreKyotenByBumon)) {
+        const v = o.ignoreKyotenByBumon[b];
+        if (!Array.isArray(v) || !v.every(isStr)) return '対象外の拠点が正しくありません';
+      }
+    }
     for (const c of (o.confirmed || [])) {
       if (!isObj(c) || !isStr(c.paraKey) || !isStr(c.rentaKey)) return '確認済み対応表の中身が正しくありません';
       if (['paraDisp', 'rentaDisp', 'at'].some(k => c[k] != null && typeof c[k] !== 'string')) return '確認済み対応表の中身が正しくありません';
@@ -103,16 +113,23 @@
   }
   function applyCfg(o) {
     S.mappings = o.mappings || [];
-    // 組に割り当てた拠点は対象外より優先される（集計側と同じ）。画面と出力の表示をそれに合わせる
-    const assigned = new Set();
-    S.mappings.filter(m => !m.ignore).forEach(m => (m.kyoten || []).forEach(k => assigned.add(k)));
-    S.ignoreKyoten = (o.ignoreKyoten || []).filter(k => !assigned.has(k));
+    // 拠点（部門）を選ぶ前の版が書いた ignoreKyoten は、どの拠点のものか分からないので使わない
+    S.ignoreByBumon = {};
+    Object.keys(o.ignoreKyotenByBumon || {}).forEach(b => { S.ignoreByBumon[b] = o.ignoreKyotenByBumon[b].slice(); });
+    S.bumon = typeof o.bumon === 'string' ? o.bumon : null;
+    loadIgnoreFor(S.bumon);
     S.confirmed = o.confirmed || [];
     S.exclPara = o.exclPara || [];
     S.exclRenta = o.exclRenta || [];
     $('threshold').value = o.threshold || 0;
     $('chkOneSide').checked = o.showOneSide !== false;
     renderExcl();
+  }
+  /** 選んだ拠点の「対象外にした卸元の拠点」を取り出す。組に割り当てた拠点は対象外より優先する（集計側と同じ） */
+  function loadIgnoreFor(b) {
+    const assigned = new Set();
+    S.mappings.filter(m => m.bumon === b && !m.ignore).forEach(m => m.kyoten.forEach(k => assigned.add(k)));
+    S.ignoreKyoten = (b != null && S.ignoreByBumon[b] ? S.ignoreByBumon[b] : []).filter(k => !assigned.has(k));
   }
 
   // ---------- ファイル読み込み ----------
@@ -253,22 +270,49 @@
     refresh();
   }
 
+  // ---------- 拠点（部門）の選択 ----------
+  // 突合は拠点（スマートれん太の部門）を1つ選んで行う。選んでいない拠点の行は、すべて対象外として扱う
+  function renderBumon() {
+    const box = $('bumonPick'); clear(box);
+    const count = new Map();
+    S.renta.rows.forEach(r => count.set(r.bumon, (count.get(r.bumon) || 0) + 1));
+    const names = [...count.keys()];
+    // 保存してある拠点が今月のファイルに無ければ選び直してもらう。1つしか無ければそれを選ぶ
+    if (!names.includes(S.bumon)) switchBumon(names.length === 1 ? names[0] : null);
+    names.forEach(name => {
+      const lab = el('label', 'pick');
+      const rb = document.createElement('input');
+      rb.type = 'radio'; rb.name = 'bumon'; rb.checked = name === S.bumon;
+      rb.addEventListener('change', () => { if (rb.checked) selectBumon(name); });
+      lab.appendChild(rb);
+      lab.appendChild(el('span', null, (name || '（部門なし）') + '　' + count.get(name).toLocaleString() + '行'));
+      box.appendChild(lab);
+    });
+  }
+  function switchBumon(name) {
+    if (S.bumon != null) S.ignoreByBumon[S.bumon] = S.ignoreKyoten;
+    S.bumon = name;
+    loadIgnoreFor(name);
+  }
+  function selectBumon(name) {
+    switchBumon(name);
+    invalidateResult(); saveCfg(); renderMap(); refresh();
+  }
+
   // ---------- 対応表 ----------
   function renderMap() {
     if (!S.renta || !S.para) return;
-    if (!S.suggest) {
-      S.suggest = M.suggestMappings(S.renta.rows, S.para.rows);
-      // いま読んでいるファイルに無い組・拠点は、保存済み設定から落とす
-      const gk = new Set(S.suggest.groups.map(g => g.bumon + '\t' + g.shiireCd));
-      const kk = new Set(S.suggest.kyoten.map(k => k.kyoten));
-      const before = S.mappings.length;
-      S.mappings = S.mappings
-        .filter(m => gk.has(m.bumon + '\t' + m.shiireCd))
-        .map(m => Object.assign({}, m, { kyoten: (m.kyoten || []).filter(k => kk.has(k)) }))
-        .filter(m => m.ignore || m.kyoten.length);
-      S.droppedMappings = before - S.mappings.length;
+    if (!S.suggest) S.suggest = M.suggestMappings(S.renta.rows, S.para.rows);
+    renderBumon();
+    if (S.bumon == null) {
+      clear($('mapTable').querySelector('thead')); clear($('mapTable').querySelector('tbody'));
+      S.dupKyoten = [];
+      const box = $('mapMsg'); clear(box);
+      msg(box, 'note', '拠点を選んでください。選んだ拠点の分だけを突合します。');
+      return;
     }
     const kyoten = S.suggest.kyoten.map(k => k.kyoten);
+    const presentK = new Set(kyoten);
     const thead = $('mapTable').querySelector('thead');
     const tbody = $('mapTable').querySelector('tbody');
     clear(thead); clear(tbody);
@@ -298,12 +342,15 @@
     igRow.appendChild(el('td'));
     tbody.appendChild(igRow);
 
-    S.suggest.groups.forEach(g => {
+    groupsNow().forEach(g => {
       const cur = S.mappings.find(m => m.bumon === g.bumon && m.shiireCd === g.shiireCd);
       const row = el('tr');
       row.appendChild(el('td', null, g.bumon));
       row.appendChild(el('td', null, g.shiireCd));
-      row.appendChild(el('td', null, g.shiireNm));
+      const nm = el('td', null, g.shiireNm);
+      const hidden = cur && !cur.ignore ? cur.kyoten.filter(k => !presentK.has(k)) : [];
+      if (hidden.length) nm.appendChild(el('div', 'mini', '今月のファイルに無い拠点：' + hidden.join('、') + '（設定は残しています）'));
+      row.appendChild(nm);
       row.appendChild(el('td', 'num', g.count.toLocaleString()));
       row.appendChild(el('td', 'num', yen(g.amount)));
       kyoten.forEach(k => {
@@ -330,10 +377,17 @@
     let m = S.mappings.find(x => x.bumon === g.bumon && x.shiireCd === g.shiireCd);
     if (!m) { m = { bumon: g.bumon, shiireCd: g.shiireCd, kyoten: [], ignore: false }; S.mappings.push(m); }
     if (isIgnore) {
+      if (on) {
+        // 今月は画面に見えていない拠点との組み合わせも外れるので、確かめてから進める
+        const ks = presentKyotenSet();
+        const hidden = m.kyoten.filter(k => !ks.has(k));
+        if (hidden.length && !confirm('この組は、今月のファイルに無い拠点（' + hidden.join('、') + '）とも組んでいます。' +
+          '\n対象外にすると、その拠点との組み合わせも外れます。よろしいですか。')) { renderMap(); return; }
+      }
       m.ignore = on;
       if (on) {
-        // 組を対象外にしたら、その組だけが受け持っていた拠点も対象外にする
-        (m.kyoten || []).filter(k => !S.mappings.some(x => x !== m && !x.ignore && (x.kyoten || []).includes(k)))
+        // 組を対象外にしたら、その組だけが受け持っていた拠点も対象外にする（同じ拠点（部門）の中で見る）
+        m.kyoten.filter(k => !S.mappings.some(x => x !== m && x.bumon === m.bumon && !x.ignore && x.kyoten.includes(k)))
           .forEach(k => { if (!S.ignoreKyoten.includes(k)) S.ignoreKyoten.push(k); });
         m.kyoten = [];
       }
@@ -351,9 +405,10 @@
   function setKyotenIgnore(k, on) {
     if (on) {
       if (!S.ignoreKyoten.includes(k)) S.ignoreKyoten.push(k);
-      // 対象外にした拠点は組から外す。突き合わせる拠点が無くなった組は対象外にする
+      // 対象外にした拠点は、選んでいる拠点（部門）の組から外す。突き合わせる拠点が無くなった組は対象外にする。
+      // 他の拠点（部門）の設定には触れない
       S.mappings.forEach(m => {
-        if (m.ignore || !(m.kyoten || []).includes(k)) return;
+        if (m.bumon !== S.bumon || m.ignore || !m.kyoten.includes(k)) return;
         m.kyoten = m.kyoten.filter(x => x !== k);
         if (!m.kyoten.length) m.ignore = true;
       });
@@ -363,16 +418,53 @@
     invalidateResult(); saveCfg(); renderMap(); refresh();
   }
 
+  // 保存した対応表は、今月のファイルに無い組・拠点、選んでいない拠点（部門）のものも消さずに残す
+  // （行の無い月をまたいでも、拠点を切り替えても、設定し直さなくてよいように）。
+  // 画面の表示・実行してよいかの判定・集計には、選んだ拠点の、今月のファイルにある組・拠点だけを使う
+  const gkey = (b, c) => JSON.stringify([b, c]);
+  function groupsNow() { return S.suggest && S.bumon != null ? S.suggest.groups.filter(g => g.bumon === S.bumon) : []; }
+  function presentGroupKeys() { return new Set(groupsNow().map(g => gkey(g.bumon, g.shiireCd))); }
+  function presentKyotenSet() { return new Set(S.suggest ? S.suggest.kyoten.map(k => k.kyoten) : []); }
+  function liveNow() {
+    const gs = presentGroupKeys(), ks = presentKyotenSet();
+    return S.mappings.filter(m => !m.ignore && gs.has(gkey(m.bumon, m.shiireCd)))
+      .map(m => Object.assign({}, m, { kyoten: m.kyoten.filter(k => ks.has(k)) }));
+  }
+  /** 今月突合する組。今月のファイルにある拠点と1つ以上組んでいるものだけ */
+  function activeMappings() { return liveNow().filter(m => m.kyoten.length); }
+  /** 今月のファイルに無い拠点とだけ組んでいる組。今月は突合しない（設定は残す） */
+  function idleMappings() { return liveNow().filter(m => !m.kyoten.length); }
+  /** 集計に渡す対応表。残してある他の月・他の拠点の設定を結果に混ぜないよう、今月使うものだけを渡す */
+  function runMappings() {
+    const gs = presentGroupKeys();
+    const out = activeMappings().map(m => ({ bumon: m.bumon, shiireCd: m.shiireCd, kyoten: m.kyoten, ignore: false }));
+    S.mappings.filter(m => m.ignore && gs.has(gkey(m.bumon, m.shiireCd)))
+      .forEach(m => out.push({ bumon: m.bumon, shiireCd: m.shiireCd, kyoten: [], ignore: true }));
+    S.suggest.groups.filter(g => g.bumon !== S.bumon)
+      .forEach(g => out.push({ bumon: g.bumon, shiireCd: g.shiireCd, kyoten: [], ignore: true }));
+    return out;
+  }
+
   function renderMapMsg() {
     const box = $('mapMsg'); clear(box);
-    if (S.droppedMappings) {
-      msg(box, 'note', '保存されていた設定のうち ' + S.droppedMappings +
-        ' 件は、今回のファイルに無い組だったので外しました。内容を確認してください。');
+    const gs = presentGroupKeys(), ks = presentKyotenSet();
+    const groups = groupsNow();
+    // 請求データは拠点ごとに届く。選んだ拠点の利用者がほとんど見当たらなければ、別の拠点のファイルを疑う
+    if (groups.length && !groups.some(g => g.hits.some(h => h.ratioGroup >= 0.3))) {
+      msg(box, 'warn', '選んだ拠点の利用者が、この請求データにほとんど見当たりません。別の拠点の請求データを選んでいないか確かめてください。');
     }
-    const mapped = S.mappings.filter(m => !m.ignore);
+    const hiddenG = S.mappings.filter(m => m.bumon === S.bumon && !gs.has(gkey(m.bumon, m.shiireCd))).length;
+    const hiddenK = new Set();
+    S.mappings.filter(m => m.bumon === S.bumon && !m.ignore).forEach(m => m.kyoten.forEach(k => { if (!ks.has(k)) hiddenK.add(k); }));
+    S.ignoreKyoten.forEach(k => { if (!ks.has(k)) hiddenK.add(k); });
+    if (hiddenG || hiddenK.size) {
+      msg(box, 'note', '今月のファイルに無い' + [hiddenG ? '組 ' + hiddenG + '組' : '', hiddenK.size ? '拠点 ' + hiddenK.size + '件' : ''].filter(Boolean).join('・') +
+        'の設定は、翌月以降のためにそのまま残しています（今月の突合には影響しません）。');
+    }
+    const mapped = activeMappings();
     const covered = new Set();
     const dup = new Set();
-    mapped.forEach(m => (m.kyoten || []).forEach(k => {
+    mapped.forEach(m => m.kyoten.forEach(k => {
       if (covered.has(k)) dup.add(k);
       covered.add(k);
     }));
@@ -380,6 +472,13 @@
     if (dup.size) {
       msg(box, 'warn', '同じ拠点が複数の組に割り当てられています：' + [...dup].join('、') +
         '。どの組と突き合わせるかが決まらないため、1つに絞ってください。');
+    }
+    const idle = idleMappings();
+    if (idle.length) {
+      const rowsOf = m => groups.find(g => g.bumon === m.bumon && g.shiireCd === m.shiireCd);
+      msg(box, 'warn', '今月のファイルに無い拠点とだけ組んでいる組があります：' +
+        idle.map(m => { const g = rowsOf(m); return m.bumon + '×' + m.shiireCd + '（' + g.count + '行 ' + yen(g.amount) + '円）'; }).join('、') +
+        '。この組は今月は突合しません（設定は残しています）。卸元から請求が来ていないか、別の拠点と組むべきかを確かめてください。');
     }
     const ignored = S.suggest.kyoten.filter(k => !covered.has(k.kyoten) && S.ignoreKyoten.includes(k.kyoten));
     const missing = S.suggest.kyoten.filter(k => !covered.has(k.kyoten) && !S.ignoreKyoten.includes(k.kyoten));
@@ -399,7 +498,7 @@
       msg(box, 'note', '対象外にした卸元の拠点：' +
         ignored.map(k => k.kyoten + '（' + k.count + '行 ' + yen(k.amount) + '円）').join('、') + '。この分は突合しません。');
     }
-    const unset = S.suggest.groups.filter(g => !S.mappings.some(m => m.bumon === g.bumon && m.shiireCd === g.shiireCd));
+    const unset = groups.filter(g => !S.mappings.some(m => m.bumon === g.bumon && m.shiireCd === g.shiireCd));
     if (unset.length) {
       msg(box, 'warn', '拠点も「対象外」も指定していない組が ' + unset.length + ' 組あります（' +
         unset.slice(0, 5).map(g => g.bumon + '×' + g.shiireCd).join('、') + (unset.length > 5 ? ' ほか' : '') +
@@ -458,7 +557,8 @@
     const reasons = [];
     if (loading.renta || loading.para) reasons.push('ファイルの読み込み');
     if (!$('chkPeriod').checked) reasons.push('対象年月の確認');
-    if (!S.mappings.filter(m => !m.ignore).length) reasons.push('突合する組の指定');
+    if (S.bumon == null) reasons.push('拠点の選択');
+    else if (!activeMappings().length) reasons.push('突合する組の指定');
     if (S.dupKyoten && S.dupKyoten.length) reasons.push('拠点の重複の解消');
     $('btnRun').disabled = reasons.length > 0;
     $('runHint').textContent = reasons.length ? reasons.join(' と ') + ' が済んでいません' : '';
@@ -481,11 +581,12 @@
     S.renta.rows.forEach(r => { r.bucket = null; });
     S.para.rows.forEach(p => { p.bucket = null; });
     const res = M.reconcile(S.para.rows, S.renta.rows, {
-      mappings: S.mappings, ignoreKyoten: S.ignoreKyoten, confirmed: S.confirmed,
+      mappings: runMappings(), ignoreKyoten: S.ignoreKyoten, confirmed: S.confirmed,
       excludeParaRules: S.exclPara.filter(r => r.value),
       excludeRentaRules: S.exclRenta.filter(r => r.value)
     });
     res.ms = Math.round(performance.now() - t0);
+    res.bumon = S.bumon;
     S.result = res;
     renderResult();
     saveCfg();
@@ -519,11 +620,14 @@
   const TAX_LABEL = { '課': '課税', '非': '非課税' };
   function detailLines(v) {
     const out = [];
+    const taxText = pr => '課税区分が違う（スマートれん太 ' + TAX_LABEL[C.taxClass(pr.r.tax)] +
+      ' → 卸元 ' + TAX_LABEL[C.taxClass(pr.p.tax)] + '）';
+    // 金額も課税区分も違う明細は1件にまとめる（件数と行数をそろえる）
     v.pairs.filter(pr => pr.p.amount !== pr.r.amount).forEach(pr =>
-      out.push(pr.r.shohinNm + '：' + yen(pr.r.amount) + '円 → ' + yen(pr.p.amount) + '円'));
-    v.taxMis.forEach(pr =>
-      out.push(pr.r.shohinNm + '：課税区分が違う（スマートれん太 ' + TAX_LABEL[C.taxClass(pr.r.tax)] +
-        ' → 卸元 ' + TAX_LABEL[C.taxClass(pr.p.tax)] + '）'));
+      out.push(pr.r.shohinNm + '：' + yen(pr.r.amount) + '円 → ' + yen(pr.p.amount) + '円' +
+        (v.taxMis.includes(pr) ? '、' + taxText(pr) : '')));
+    v.taxMis.filter(pr => pr.p.amount === pr.r.amount).forEach(pr =>
+      out.push(pr.r.shohinNm + '：' + taxText(pr)));
     v.onlyPara.forEach(p =>
       out.push(p.shohinNm + '：れん太に無し（卸元 ' + yen(p.amount) + '円）'));
     v.onlyRenta.forEach(r =>
@@ -574,6 +678,7 @@
       d.appendChild(el('div', 'v' + (neg ? ' neg' : ''), value));
       k.appendChild(d);
     };
+    kpi('拠点', res.bumon || '（部門なし）');
     kpi('卸元の請求', yen(res.buckets[B.MATCHED].para.amount + res.buckets[B.ONESIDE].para.amount) + '円');
     kpi('スマートれん太', yen(res.buckets[B.MATCHED].renta.amount + res.buckets[B.ONESIDE].renta.amount) + '円');
     kpi('差額', (res.scopedDiff > 0 ? '+' : '') + yen(res.scopedDiff) + '円', res.scopedDiff !== 0);
@@ -617,7 +722,7 @@
     const bb = $('buckets'); clear(bb);
     const t = el('table');
     const h = el('tr');
-    ['区分', '卸元 行数', '卸元 金額', '基幹 行数', '基幹 金額'].forEach((x, i) =>
+    ['区分', '卸元 行数', '卸元 金額', 'れん太 行数', 'れん太 金額'].forEach((x, i) =>
       h.appendChild(el('th', i ? 'num' : null, x)));
     t.appendChild(h);
     Object.values(B).forEach(b => {
@@ -662,17 +767,18 @@
     return '';
   }
 
+  // kind は Excel の書式の種類（text / num / diff / count）、w は Excel の列幅
   const COLUMNS = [
-    { key: 'no', label: 'お客様番号', get: v => v.renta.length ? v.renta[0].kokyakuNo : '' },
-    { key: 'kname', label: 'お客様名', get: v => v.renta.length ? v.renta[0].kokyakuNm : '' },
-    { key: 'name', label: '利用者名', get: v => v.label },
-    { key: 'names', label: '両側の表記', get: v => ((v.flags || []).some(f => f.indexOf('根拠:') === 0) || (v.flags || []).includes('合算')) ? ('卸元 ' + v.paraNames.join('/') + ' ／ 基幹 ' + v.rentaNames.join('/')) : '' },
-    { key: 'tr', label: 'スマートれん太', num: true, get: v => v.tr },
-    { key: 'tp', label: '卸元の請求', num: true, get: v => v.tp },
-    { key: 'diff', label: '差額', num: true, get: v => v.diff },
-    { key: 'cnt', label: '件数', num: true, get: v => v.pairs.filter(p => p.p.amount !== p.r.amount || v.taxMis.includes(p)).length + v.onlyPara.length + v.onlyRenta.length },
-    { key: 'detail', label: '不一致の内容', get: v => detailLines(v) },
-    { key: 'flags', label: '注記', get: v => v.flags }
+    { key: 'no', label: 'お客様番号', w: 12, kind: 'text', get: v => v.renta.length ? v.renta[0].kokyakuNo : '' },
+    { key: 'kname', label: 'お客様名', w: 20, kind: 'text', get: v => v.renta.length ? v.renta[0].kokyakuNm : '' },
+    { key: 'name', label: '利用者名', w: 18, kind: 'text', get: v => v.label },
+    { key: 'tr', label: 'スマートれん太', w: 15, kind: 'num', num: true, get: v => v.tr },
+    { key: 'tp', label: '卸元の請求', w: 15, kind: 'num', num: true, get: v => v.tp },
+    { key: 'diff', label: '差額', w: 12, kind: 'diff', num: true, get: v => v.diff },
+    { key: 'cnt', label: '件数', w: 6, kind: 'count', num: true, get: v => v.pairs.filter(p => p.p.amount !== p.r.amount || v.taxMis.includes(p)).length + v.onlyPara.length + v.onlyRenta.length },
+    { key: 'detail', label: '不一致の内容', w: 68, kind: 'text', get: v => detailLines(v) },
+    { key: 'flags', label: '注記', w: 30, kind: 'text', get: v => v.flags },
+    { key: 'names', label: '両側の表記', w: 34, kind: 'text', get: v => ((v.flags || []).some(f => f.indexOf('根拠:') === 0) || (v.flags || []).includes('合算')) ? ('卸元 ' + v.paraNames.join('/') + ' ／ れん太 ' + v.rentaNames.join('/')) : '' }
   ];
 
   // ---------- Excel 出力 ----------
@@ -682,60 +788,136 @@
     return RISKY.test(t) ? "'" + t : t;   // 数式として解釈されないようにする（設計書 12.3）
   };
 
-  function exportXlsx() {
+  /** 出力の中身を組み立てる（設計書 12）。上に要点だけ、表は書式つき、細かい条件は表の下 */
+  function buildSheet() {
     const res = S.result, B = M.BUCKET;
     const list = needList();
-    const aoa = [];
     const now = new Date();
     const stamp = now.getFullYear() + '/' + String(now.getMonth() + 1).padStart(2, '0') + '/' +
       String(now.getDate()).padStart(2, '0') + ' ' + String(now.getHours()).padStart(2, '0') + ':' +
       String(now.getMinutes()).padStart(2, '0');
+    const bumonName = res.bumon || '（部門なし）';
+    const totalR = res.buckets[B.MATCHED].renta.amount + res.buckets[B.ONESIDE].renta.amount;
+    const totalP = res.buckets[B.MATCHED].para.amount + res.buckets[B.ONESIDE].para.amount;
+    const taxOnly = list.filter(v => v.diff === 0).length;
+    const u = res.unresolved;
+    const th = Number($('threshold').value) || 0;
 
-    aoa.push([safe('レンタル卸 金額不一致一覧　' + S.period)]);
-    aoa.push([safe('卸元 ' + S.paraName + '　／　スマートれん太 ' + S.rentaName + '　／　作成 ' + stamp)]);
-    aoa.push([safe('卸元の請求 ' + yen(res.buckets[B.MATCHED].para.amount + res.buckets[B.ONESIDE].para.amount) +
-      '円　スマートれん太 ' + yen(res.buckets[B.MATCHED].renta.amount + res.buckets[B.ONESIDE].renta.amount) +
-      '円　差額 ' + (res.scopedDiff > 0 ? '+' : '') + yen(res.scopedDiff) + '円')]);
+    const LINE = 'D0D5DD', SUB = '5A6273';
+    const ST = {
+      title: { font: { bold: true, size: 14 } },
+      stamp: { font: { size: 9, color: '8A91A0' }, align: { h: 'right' } },
+      sumLabel: { font: { size: 9, color: SUB }, fill: 'F3F5F9', border: LINE, align: { h: 'center' } },
+      sumText: { font: { bold: true, size: 12 }, border: LINE, align: { h: 'center' } },
+      sumNum: { font: { bold: true, size: 12 }, border: LINE, align: { h: 'right' }, numFmt: '#,##0' },
+      sumDiff: { font: { bold: true, size: 12 }, border: LINE, align: { h: 'right' }, numFmt: '+#,##0;[Red]-#,##0;0' },
+      note: { font: { size: 9, color: SUB } },
+      noteHead: { font: { bold: true, size: 9, color: SUB } },
+      warn: { font: { bold: true, size: 10, color: 'B42318' }, fill: 'FEF3F2' },
+      head: { font: { bold: true, size: 10, color: 'FFFFFF' }, fill: '4F46E5', border: '4F46E5', align: { h: 'center', wrap: true } }
+    };
+    const bodyStyle = (kind, zebra) => {
+      const st = { font: { size: 10 }, border: LINE, align: { v: 'top', wrap: true } };
+      if (zebra) st.fill = 'F7F8FB';
+      if (kind === 'num') { st.numFmt = '#,##0'; st.align = { v: 'top', h: 'right' }; }
+      if (kind === 'diff') { st.numFmt = '+#,##0;[Red]-#,##0;0'; st.align = { v: 'top', h: 'right' }; st.font = { size: 10, bold: true }; }
+      if (kind === 'count') st.align = { v: 'top', h: 'center' };
+      return st;
+    };
+    const text = (v, style) => ({ v: safe(v), style });
+    const n = COLUMNS.length;
+    const rows = [];
+    const pad = cells => { while (cells.length < n) cells.push(null); return cells; };
+
+    // 1) 題名
+    const r1 = pad([text('レンタル卸 金額不一致一覧　' + S.period + '　' + bumonName, ST.title)]);
+    r1[n - 1] = text('作成 ' + stamp, ST.stamp);
+    rows.push({ height: 26, cells: r1 });
+
+    // 2) 要点（人数と合計）
+    rows.push({ height: 17, cells: pad(['不一致の人数', '金額の違い', '課税区分だけの違い', 'スマートれん太 計', '卸元の請求 計', '差額 計'].map(x => text(x, ST.sumLabel))) });
+    rows.push({ height: 24, cells: pad([
+      text(list.length + '人', ST.sumText), text((list.length - taxOnly) + '人', ST.sumText), text(taxOnly + '人', ST.sumText),
+      { v: totalR, style: ST.sumNum }, { v: totalP, style: ST.sumNum }, { v: res.scopedDiff, style: ST.sumDiff }
+    ]) });
+
+    // 3) 異常があるときだけ注意を出す（何も無ければ出さない）
+    const warns = [];
+    if (!res.checksum.applicable) warns.push('金額を読み取れない行が ' + res.checksum.unknownCount + '行あり、検算ができません。この結果は確定扱いにできません');
+    else if (!res.checksum.ok) warns.push('検算が合いません。取りこぼしがある可能性があるので、この結果は使わないでください');
+    const loose = [];
+    if (u.outscope) loose.push('突合していない行 ' + u.outscope + '行');
+    if (u.nameCheck) loose.push('相手を決められない人 ' + u.nameCheck + '人');
+    if (u.noScope) loose.push('拠点を決められない人 ' + u.noScope + '人');
+    if (u.taxUnknown) loose.push('課税区分を読めない人 ' + u.taxUnknown + '人');
+    if (loose.length) warns.push(loose.join('、') + ' があります。この一覧に出ていない違いが残っているかもしれません');
+    warns.forEach(w => rows.push({ height: 20, cells: pad([text('注意：' + w + '。', ST.warn)]).map(c => c || { v: '', style: ST.warn }) }));
+    rows.push({ height: 16, cells: pad([text('計は、この拠点で突合した全員（' + res.persons.length.toLocaleString() + '人）の税抜の合計。差額は スマートれん太 − 卸元の請求。' +
+      '「不一致の内容」の矢印は、スマートれん太 → 卸元 の向き。', ST.note)]) });
+    rows.push({ height: 6, cells: [] });
+
+    // 4) 表
+    const headRow = rows.length + 1;
+    rows.push({ height: 22, cells: COLUMNS.map(c => text(c.label, ST.head)) });
+    // 明細1件を1行にする。人ごとの項目（番号・氏名・金額・件数）は最初の行にだけ出し、色は人ごとに変える。
+    // 注記は最初の行に全部出す。続きの行には、明細にかかわる「明細説明未確定」だけを繰り返す（長い注記を全行に並べない）
+    const DETAIL_FLAG = '明細説明未確定';
+    list.forEach((v, i) => {
+      const lines = detailLines(v);
+      const flags = ((v.flags || []).join(' ') + (v.note ? ' ' + v.note : '')).trim();
+      const contFlags = (v.flags || []).includes(DETAIL_FLAG) ? DETAIL_FLAG : '';
+      (lines.length ? lines : ['']).forEach((line, k) => {
+        rows.push({ cells: COLUMNS.map(c => {
+          const style = bodyStyle(c.kind, i % 2 === 1);
+          if (c.key === 'detail') return text(line, style);
+          if (c.key === 'flags') return text(k > 0 ? contFlags : flags, style);
+          if (k > 0) return text('', style);
+          const val = c.get(v);
+          if (c.num && typeof val === 'number') return { v: val, style };
+          return text(val, style);
+        }) });
+      });
+    });
+
+    // 5) 細かい条件（後から経緯を追うための記録）
     const exc = [];
     Object.values(B).forEach(b => {
       if (b === B.MATCHED || b === B.ONESIDE) return;
       const x = res.buckets[b];
       if (x.para.count || x.renta.count) {
-        exc.push(b + '：卸元 ' + x.para.count + '行 ' + yen(x.para.amount) + '円／基幹 ' + x.renta.count + '行 ' + yen(x.renta.amount) + '円');
+        exc.push(b + '：卸元 ' + x.para.count + '行 ' + yen(x.para.amount) + '円／れん太 ' + x.renta.count + '行 ' + yen(x.renta.amount) + '円');
       }
     });
-    aoa.push([safe(taxTotalsText(res))]);
-    aoa.push([safe('対象外の内訳　' + (exc.length ? exc.join('　') : 'なし'))]);
     const igK = S.ignoreKyoten.filter(k => S.para.rows.some(p => p.kyoten === k));
-    const igG = S.mappings.filter(m => m.ignore).length;
-    aoa.push([safe('対象外にした卸元の拠点：' + (igK.length ? igK.join('、') : 'なし') +
-      '　対象外にした部門×仕入先：' + igG + '組')]);
-    const u = res.unresolved;
-    aoa.push([safe('判定不能：範囲外' + u.outscope + '行／金額不明' + u.unknown + '行／名寄せ要確認' + u.nameCheck +
-      '人／明細未確定' + u.detailCheck + '人／弱い根拠' + u.weakTier + '人／拠点不明' + (u.noScope || 0) + '人' +
-      '／課税区分不明' + (u.taxUnknown || 0) + '人' +
-      (res.checksum.ok ? '　検算：成立' : '　検算：未成立'))]);
-    const th = Number($('threshold').value) || 0;
-    if (th > 0) aoa.push([safe('差額 ' + th + '円以下は表示していません（課税区分の違いは金額にかかわらず表示）')]);
-    aoa.push([safe('並び順：利用者名の50音順（卸元のカナを優先）')]);
-    aoa.push([]);
-    aoa.push(COLUMNS.map(c => c.label));
-    list.forEach(v => {
-      aoa.push(COLUMNS.map(c => {
-        const val = c.get(v);
-        if (c.key === 'detail') return safe((val || []).join('\n'));
-        if (c.key === 'flags') return safe(((val || []).join(' ') + (v.note ? ' ' + v.note : '')).trim());
-        if (c.num) return typeof val === 'number' ? val : safe(val);
-        return safe(val);
-      }));
-    });
+    const gsNow = presentGroupKeys();
+    const igG = S.mappings.filter(m => m.ignore && gsNow.has(gkey(m.bumon, m.shiireCd))).length;
+    const cond = [
+      '入力ファイル：卸元 ' + S.paraName + '　／　スマートれん太 ' + S.rentaName,
+      '突合しなかったもの：ほかの拠点の行、対象外にした卸元の拠点（' + (igK.length ? igK.join('、') : 'なし') + '）、対象外にした仕入先 ' + igG + '組',
+      '突合しなかった行の内訳：' + (exc.length ? exc.join('　') : 'なし'),
+      taxTotalsText(res),
+      '確認が要る人：明細の対応がつかない ' + u.detailCheck + '人、弱い根拠で結んだ ' + u.weakTier + '人（それぞれ「注記」に表示）　検算：' + (res.checksum.ok ? '成立' : '未成立'),
+      '並び順：利用者名の50音順（卸元のカナを優先）' + (th > 0 ? '　差額 ' + th + '円以下は表示していません（課税区分の違いは金額にかかわらず表示）' : '')
+    ];
+    rows.push({ height: 10, cells: [] });
+    rows.push({ height: 16, cells: pad([text('この一覧の条件', ST.noteHead)]) });
+    cond.forEach(line => rows.push({ height: 16, cells: pad([text(line, ST.note)]) }));
 
-    const ws = XLSX.utils.aoa_to_sheet(aoa);
-    ws['!cols'] = [{ wch: 12 }, { wch: 22 }, { wch: 18 }, { wch: 34 }, { wch: 13 }, { wch: 13 }, { wch: 11 }, { wch: 7 }, { wch: 60 }, { wch: 40 }];
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, '金額不一致一覧');
-    const fname = 'レンタル卸_金額不一致一覧_' + S.period.replace(/[^0-9年月]/g, '') + '.xlsx';
-    XLSX.writeFile(wb, fname, { compression: true });
+    return {
+      sheetName: '金額不一致一覧',
+      cols: COLUMNS.map(c => c.w),
+      rows,
+      merges: ['A1:' + X.colName(n - 2) + '1'],
+      freezeRow: headRow,
+      titleRow: headRow,
+      fileName: 'レンタル卸_金額不一致一覧_' + S.period.replace(/[^0-9年月]/g, '') + '_' +
+        bumonName.replace(/[\\/:*?"<>|\s]/g, '') + '.xlsx'
+    };
+  }
+
+  function exportXlsx() {
+    const spec = buildSheet();
+    X.save(X.build(spec), spec.fileName);
   }
 
   // ---------- 起動 ----------
@@ -748,17 +930,34 @@
   $('btnXlsx').addEventListener('click', exportXlsx);
 
   $('btnSuggest').addEventListener('click', () => {
-    if (!S.suggest) return;
-    // 対象外にしてある拠点は候補に入れない（毎月押しても設定が戻らないように）
-    S.mappings = S.suggest.groups.map(g => {
-      const ky = g.suggestKyoten.filter(k => !S.ignoreKyoten.includes(k));
+    if (!S.suggest || S.bumon == null) return;
+    // 対象外にしてある拠点は候補に入れない（毎月押しても設定が戻らないように）。
+    // 候補で作り直すのは今月のファイルにある組・拠点だけ。見えていない組・拠点の設定は残す
+    const ks = presentKyotenSet(), gs = presentGroupKeys();
+    // 他の拠点（部門）の組と強く重なる卸元の拠点は、この拠点では対象外にする
+    S.suggest.groups.filter(g => g.bumon !== S.bumon).forEach(g => g.suggestKyoten.forEach(k => {
+      if (!S.ignoreKyoten.includes(k)) S.ignoreKyoten.push(k);
+    }));
+    const rebuilt = groupsNow().map(g => {
+      const prev = S.mappings.find(m => m.bumon === g.bumon && m.shiireCd === g.shiireCd);
+      const kept = prev && !prev.ignore ? prev.kyoten.filter(k => !ks.has(k)) : [];
+      const ky = [...new Set(g.suggestKyoten.filter(k => !S.ignoreKyoten.includes(k)).concat(kept))];
       return ky.length
         ? { bumon: g.bumon, shiireCd: g.shiireCd, kyoten: ky, ignore: false }
         : { bumon: g.bumon, shiireCd: g.shiireCd, kyoten: [], ignore: true };
     });
+    S.mappings = rebuilt.concat(S.mappings.filter(m => !gs.has(gkey(m.bumon, m.shiireCd))));
+    const assigned = new Set();
+    rebuilt.filter(m => !m.ignore).forEach(m => m.kyoten.forEach(k => assigned.add(k)));
+    S.ignoreKyoten = S.ignoreKyoten.filter(k => !assigned.has(k));
     invalidateResult(); saveCfg(); renderMap(); refresh();
   });
-  $('btnMapClear').addEventListener('click', () => { S.mappings = []; S.ignoreKyoten = []; invalidateResult(); saveCfg(); renderMap(); refresh(); });
+  // 空にするのは選んでいる拠点（部門）の設定だけ。ほかの拠点の設定は残す
+  $('btnMapClear').addEventListener('click', () => {
+    if (S.bumon == null) return;
+    S.mappings = S.mappings.filter(m => m.bumon !== S.bumon); S.ignoreKyoten = [];
+    invalidateResult(); saveCfg(); renderMap(); refresh();
+  });
 
   $('btnAddExclPara').addEventListener('click', () => { S.exclPara.push({ field: 'model', value: '', amountIn: [] }); renderExcl(); });
   $('btnAddExclRenta').addEventListener('click', () => { S.exclRenta.push({ field: 'shohinNm', value: '', amountIn: [] }); renderExcl(); });
@@ -792,7 +991,7 @@
         alert('この設定ファイルは使えません：' + bad);
       } else {
         applyCfg(o);
-        // 読み込んだ設定を、いま開いているファイルに合わせて整え直す（ファイルに無い組・拠点を落とす）
+        // 読み込んだ設定で、いま開いているファイルの対応表を描き直す
         S.suggest = null;
         invalidateResult();
         renderMap(); saveCfg(); refresh();

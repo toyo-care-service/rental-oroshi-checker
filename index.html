@@ -78,6 +78,11 @@ input[type=text],input[type=number],select{font:inherit;font-size:13px;padding:6
 input[type=text]:focus,input[type=number]:focus,select:focus{outline:2px solid var(--brand-soft);border-color:var(--brand)}
 .mini{font-size:11.5px;color:var(--ink-3)}
 .excl-row{display:flex;gap:8px;align-items:center;margin-bottom:6px;flex-wrap:wrap}
+label.pick{display:inline-flex;align-items:center;gap:7px;cursor:pointer;border:1px solid var(--line);border-radius:8px;
+  padding:7px 13px;background:#fff;font-size:13px}
+label.pick:hover{border-color:var(--brand)}
+label.pick input{accent-color:var(--brand);width:15px;height:15px;margin:0}
+label.pick:has(input:checked){border-color:var(--brand);background:var(--brand-soft);color:var(--brand-dark);font-weight:600}
 tr.ignore-row td{background:#FAFBFD;color:var(--ink-2);font-weight:600;border-bottom:2px solid var(--line)}
 .hidden{display:none!important}
 .pill{font-size:11px;background:var(--brand-soft);color:var(--brand-dark);padding:2px 8px;border-radius:99px}
@@ -119,7 +124,7 @@ tr.ignore-row td{background:#FAFBFD;color:var(--ink-2);font-weight:600;border-bo
   <!-- ステップ1 -->
   <section class="card" id="cardFiles">
     <h2><span class="step-no">1</span>ファイルを選ぶ</h2>
-    <p class="hint">2つとも同じ月のものを選んでください。ドラッグ＆ドロップでも、クリックして選んでも構いません。</p>
+    <p class="hint">2つとも同じ月のものを選んでください。卸元の請求データは、突合したい拠点のものを選びます。ドラッグ＆ドロップでも、クリックして選んでも構いません。</p>
     <div class="grid2">
       <div class="drop" id="dropRenta" tabindex="0" role="button" aria-label="支払予定表を選ぶ">
         <div class="t">スマートれん太：レンタル卸支払予定表</div>
@@ -129,7 +134,7 @@ tr.ignore-row td{background:#FAFBFD;color:var(--ink-2);font-weight:600;border-bo
       </div>
       <div class="drop" id="dropPara" tabindex="0" role="button" aria-label="請求データを選ぶ">
         <div class="t">卸元：請求データ</div>
-        <div class="s">.csv を推奨（.xlsx も読めますが情報が少なくなります）</div>
+        <div class="s">拠点ごとにダウンロードしたもの。.csv を推奨（.xlsx も読めますが情報が少なくなります）</div>
         <div class="fn" id="fnPara"></div>
         <input type="file" id="filePara" accept=".csv,.xlsx,.xls">
       </div>
@@ -153,7 +158,7 @@ tr.ignore-row td{background:#FAFBFD;color:var(--ink-2);font-weight:600;border-bo
             <tr><th>年月</th><td>調べたい年月を入力</td></tr>
             <tr><th>レンタル卸</th><td><b>空欄のまま</b></td></tr>
           </table>
-          <p class="note-inline">部門とレンタル卸を空欄にすると全件が出ます。1つに絞ると<b>他の拠点を丸ごと見落とします</b>。範囲はこのアプリの「3 突合する範囲を決める」で指定してください。</p>
+          <p class="note-inline">部門とレンタル卸を空欄にすると全件が出ます。レンタル卸を1つに絞ると<b>ほかの仕入先を丸ごと見落とします</b>。拠点と範囲は、このアプリの「3 拠点を選び、突合する範囲を決める」で指定してください。</p>
           <figure data-shot="cond"><figcaption>条件の入力画面</figcaption></figure>
         </li>
         <li>
@@ -179,13 +184,18 @@ tr.ignore-row td{background:#FAFBFD;color:var(--ink-2);font-weight:600;border-bo
 
   <!-- ステップ3 -->
   <section class="card hidden" id="cardMap">
-    <h2><span class="step-no">3</span>突合する範囲を決める</h2>
-    <p class="hint">支払予定表に入っている「部門 × 仕入先」ごとに、卸元のどの拠点と突き合わせるかを指定します。
-      対象にしない組は右端の「対象外」に、突合しない卸元の拠点は表の一番上の行の「対象外」にチェックしてください。
-      どちらも指定しなかった分は範囲外として警告に出ます。</p>
+    <h2><span class="step-no">3</span>拠点を選び、突合する範囲を決める</h2>
+    <p class="hint">まず拠点を選びます。選んだ拠点の分だけを突合し、ほかの拠点の行は対象外になります。</p>
+    <div class="row" style="margin-bottom:12px">
+      <b style="font-size:13px">拠点</b>
+      <div id="bumonPick" class="row" role="radiogroup" aria-label="拠点を選ぶ"></div>
+    </div>
+    <p class="hint">次に、選んだ拠点の仕入先ごとに、卸元のどの拠点と突き合わせるかを指定します。
+      対象にしない仕入先は右端の「対象外」に、突合しない卸元の拠点は表の一番上の行の「対象外」にチェックしてください。
+      どちらも指定しなかった分は範囲外として警告に出ます。設定は拠点ごとに保存されます。</p>
     <div class="row" style="margin-bottom:10px">
       <button class="ghost" id="btnSuggest">利用者の重なりから候補を出す</button>
-      <button class="ghost" id="btnMapClear">すべて空にする</button>
+      <button class="ghost" id="btnMapClear">この拠点の設定を空にする</button>
       <span class="spacer"></span>
       <button class="ghost" id="btnCfgExport">設定を書き出す</button>
       <button class="ghost" id="btnCfgImport">設定を読み込む</button>
@@ -261,6 +271,7 @@ tr.ignore-row td{background:#FAFBFD;color:var(--ink-2);font-weight:600;border-bo
 <script src="vendor/xlsx.mini.min.js"></script>
 <script src="app.core.js"></script>
 <script src="app.match.js"></script>
+<script src="app.xlsx.js"></script>
 <script src="app.ui.js"></script>
 </body>
 </html>
