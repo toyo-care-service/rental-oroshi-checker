@@ -941,21 +941,25 @@
     const inList = f => list.filter(v => f({ flags: v.flags || [] })).length;
     const nDetail = inList(v => v.flags.includes(DETAIL_FLAG));
     const nWeak = inList(v => v.flags.some(f => f.indexOf('根拠:') === 0));
-    // 「残りは…」は、一覧に載っていない人が実際にいるときだけ書く
+    // 「残りは…」は、一覧に載っていない人が実際にいるときだけ書く。長くなるので行を分ける（印刷で右端が切れないように）
+    // 理由に挙げる表示の条件は、いま効いているものだけにする
+    const hideBy = [th > 0 ? '差額のしきい値' : '', $('chkOneSide').checked ? '' : '片側のみの人を出さない設定'].filter(Boolean);
     const restText = !(u.detailCheck > nDetail || u.weakTier > nWeak) ? ''
-      : (th > 0 || !$('chkOneSide').checked)
-        ? '残りは、人ごとの合計が一致しているか、表示の条件（差額のしきい値・片側のみ）で一覧に出ていない人。'
-        : '残りは、人ごとの合計が一致していて一覧に出ていない人。';
+      : hideBy.length
+        ? '　残りは、人ごとの合計が一致しているか、表示の条件（' + hideBy.join('・') + '）で一覧に出ていない人。'
+        : '　残りは、人ごとの合計が一致していて一覧に出ていない人。';
     const cond = [
       '入力ファイル：卸元 ' + S.paraName + '　／　スマートれん太 ' + S.rentaName,
       '突合しなかったもの：ほかの拠点の行、対象外にした卸元の拠点（' + (igK.length ? igK.join('、') : 'なし') + '）、対象外にした仕入先 ' + igG + '組',
       '突合しなかった行の内訳：' + (exc.length ? exc.join('　') : 'なし'),
       taxTotalsText(res),
       '確認が要る人（突合した全員のうち。両方に当てはまる人もいる）：明細の対応がつかない ' + u.detailCheck + '人（うち、この一覧に ' + nDetail +
-        '人）、弱い根拠で結んだ ' + u.weakTier + '人（うち、この一覧に ' + nWeak + '人）。一覧にいる人は「注記」に表示。' + restText,
+        '人）、弱い根拠で結んだ ' + u.weakTier + '人（うち、この一覧に ' + nWeak + '人）。一覧にいる人は「注記」に表示。',
+      restText,
       '検算：' + (!res.checksum.applicable ? 'できない（金額を読み取れない行がある）' : (res.checksum.ok ? '成立' : '未成立')),
-      '並び順：利用者名の50音順（卸元のカナを優先）' + (th > 0 ? '　差額 ' + th + '円以下は表示していません（課税区分の違いは金額にかかわらず表示）' : '')
-    ];
+      // しきい値は、差額のプラスにもマイナスにも同じ幅で効く（判定は絶対値）
+      '並び順：利用者名の50音順（卸元のカナを優先）' + (th > 0 ? '　差額が ±' + th + '円以内の人は表示していません（課税区分の違いは金額にかかわらず表示）' : '')
+    ].filter(Boolean);
     rows.push({ height: 10, cells: [] });
     rows.push({ height: 16, cells: pad([text('この一覧の条件', ST.noteHead)]) });
     cond.forEach(line => rows.push({ height: 16, cells: pad([text(line, ST.note)]) }));
