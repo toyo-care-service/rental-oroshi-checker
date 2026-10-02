@@ -218,6 +218,30 @@ const goodCfg = () => ({
     ok(/<pane ySplit="/.test(raw) && /orientation="landscape"/.test(raw) && /_xlnm.Print_Titles/.test(raw), '見出しの固定・横向き印刷・印刷時の見出しの繰り返しが入っている');
     ok(!/<autoFilter/.test(raw), '絞り込み（並べ替え）は付けない。並べ替えると、続きの行が誰の明細か分からなくなる');
 
+    ok(flat.some(x => /^上の人数は、人ごとの合計で数えている（金額の違い＝合計に差額がある人／課税区分だけの違い＝合計は同じで、課税区分が違う明細がある人）。/.test(x)), '人数の数え方と分け方（人ごとの合計）を、表の上に書く');
+    ok(flat.some(x => /明細の対応がつかない 1人（うち、この一覧に 1人）/.test(x)), '確認が要る人の数には、この一覧に載っている人数を添える');
+    ok(!flat.some(x => /残りは/.test(x)), '確認が要る人が全員この一覧に載っているときは、「残りは…」と書かない');
+    ok(w.rows.some(r => r[0] === '検算：成立'), '検算の結果は、1行に分けて書く');
+
+    // 合計は合うが、卸元が部材を分けて請求している人は、一覧に載らない。人数にはその旨を添える
+    const split = paraRows.map(r => (r.利用者コード === 'A02' ? Object.assign({}, r, { 金額: '1,500' }) : r))
+      .concat([{ 利用者コード: 'A02', 利用者名: '試験　二号', 利用者カナ: 'シケン　ニゴウ', 拠点: 'Z営業所', 商品名: '部材  FFF-6000', 型式: 'FFF-6000', 金額: '500', 税: '10%' }]);
+    const u4 = boot(goodCfg());
+    await loadBoth(u4, RENTA, P(split));
+    await runNow(u4);
+    await u4.$('btnXlsx').click();
+    const f4 = u4.written().rows.map(r => r.join('|'));
+    ok(resultNames(u4).join() === '試験一号', '人ごとの合計が合う人は、明細が分かれていても一覧に載せない');
+    ok(f4.some(x => /明細の対応がつかない 1人（うち、この一覧に 0人）.*残りは、人ごとの合計が一致していて一覧に出ていない人。/.test(x)), '一覧に載っていない人の数と、載らない理由が分かる');
+
+    // 金額を読み取れない行があって検算できないときは、「未成立」ではなく「できない」と書く
+    const u5 = boot(goodCfg());
+    await loadBoth(u5, RENTA, P(paraRows.concat([{ 利用者コード: 'A02', 利用者名: '試験　二号', 利用者カナ: 'シケン　ニゴウ', 拠点: 'Z営業所', 商品名: '部材  GGG-7000', 型式: 'GGG-7000', 金額: '未定', 税: '10%' }])));
+    await runNow(u5);
+    await u5.$('btnXlsx').click();
+    const r5 = u5.written().rows;
+    ok(r5.some(r => /^注意：金額を読み取れない行が 1行あり、検算ができません/.test(r[0])) && r5.some(r => r[0] === '検算：できない（金額を読み取れない行がある）') && !r5.some(r => /^検算：(成立|未成立)$/.test(r[0])), '検算できないときは、上の注意と同じく「できない」と書く（未成立と書かない）');
+
     // 税区分が違う明細は、金額が同じでも1行に出て、両側の税区分が並ぶ
     const u3 = boot(goodCfg());
     await loadBoth(u3, RENTA, P(paraRows.map(r => (r.利用者コード === 'A02' ? Object.assign({}, r, { 税: '非' }) : r))));

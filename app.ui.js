@@ -810,7 +810,7 @@
     { key: 'flags', label: '注記', w: 26, kind: 'text', per: 'flags' },
     { key: 'names', label: '両側の表記', w: 30, kind: 'text', per: 'person', get: scol('names').get }
   ];
-  const XNOTE = '表の金額は明細ごと（税抜）。差額は スマートれん太 − 卸元の請求。税区分が違う明細は、税区分を赤字にしている。';
+  const XNOTE = '表の金額は明細ごと（税抜）で、差額は スマートれん太 − 卸元の請求。税区分が違う明細は、税区分が赤字。';
 
   // ---------- Excel 出力 ----------
   const RISKY = /^[=+\-@\t\r]/;
@@ -899,6 +899,8 @@
     if (u.taxUnknown) loose.push('課税区分を読めない人 ' + u.taxUnknown + '人');
     if (loose.length) warns.push(loose.join('、') + ' があります。この一覧に出ていない違いが残っているかもしれません');
     warns.forEach(w => rows.push({ height: 20, cells: pad([text('注意：' + w + '。', ST.warn)]).map(c => c || { v: '', style: ST.warn }) }));
+    // 人数は人ごとの合計で数える。行の「不一致の内容」（明細ごと）と数え方が違うので、分け方を明記する
+    rows.push({ height: 16, cells: pad([text('上の人数は、人ごとの合計で数えている（金額の違い＝合計に差額がある人／課税区分だけの違い＝合計は同じで、課税区分が違う明細がある人）。', ST.note)]) });
     rows.push({ height: 16, cells: pad([text('計は、この拠点で突合した全員（' + res.persons.length.toLocaleString() + '人）の税抜の合計。' + XNOTE, ST.note)]) });
     rows.push({ height: 6, cells: [] });
 
@@ -935,12 +937,23 @@
     const igK = S.ignoreKyoten.filter(k => S.para.rows.some(p => p.kyoten === k));
     const gsNow = presentGroupKeys();
     const igG = S.mappings.filter(m => m.ignore && gsNow.has(gkey(m.bumon, m.shiireCd))).length;
+    // 人数は突合した全員で数えたもの。一覧に載るのはその一部なので、内訳と、残りが載らない理由を添える
+    const inList = f => list.filter(v => f({ flags: v.flags || [] })).length;
+    const nDetail = inList(v => v.flags.includes(DETAIL_FLAG));
+    const nWeak = inList(v => v.flags.some(f => f.indexOf('根拠:') === 0));
+    // 「残りは…」は、一覧に載っていない人が実際にいるときだけ書く
+    const restText = !(u.detailCheck > nDetail || u.weakTier > nWeak) ? ''
+      : (th > 0 || !$('chkOneSide').checked)
+        ? '残りは、人ごとの合計が一致しているか、表示の条件（差額のしきい値・片側のみ）で一覧に出ていない人。'
+        : '残りは、人ごとの合計が一致していて一覧に出ていない人。';
     const cond = [
       '入力ファイル：卸元 ' + S.paraName + '　／　スマートれん太 ' + S.rentaName,
       '突合しなかったもの：ほかの拠点の行、対象外にした卸元の拠点（' + (igK.length ? igK.join('、') : 'なし') + '）、対象外にした仕入先 ' + igG + '組',
       '突合しなかった行の内訳：' + (exc.length ? exc.join('　') : 'なし'),
       taxTotalsText(res),
-      '確認が要る人：明細の対応がつかない ' + u.detailCheck + '人、弱い根拠で結んだ ' + u.weakTier + '人（それぞれ「注記」に表示）　検算：' + (res.checksum.ok ? '成立' : '未成立'),
+      '確認が要る人（突合した全員のうち。両方に当てはまる人もいる）：明細の対応がつかない ' + u.detailCheck + '人（うち、この一覧に ' + nDetail +
+        '人）、弱い根拠で結んだ ' + u.weakTier + '人（うち、この一覧に ' + nWeak + '人）。一覧にいる人は「注記」に表示。' + restText,
+      '検算：' + (!res.checksum.applicable ? 'できない（金額を読み取れない行がある）' : (res.checksum.ok ? '成立' : '未成立')),
       '並び順：利用者名の50音順（卸元のカナを優先）' + (th > 0 ? '　差額 ' + th + '円以下は表示していません（課税区分の違いは金額にかかわらず表示）' : '')
     ];
     rows.push({ height: 10, cells: [] });
